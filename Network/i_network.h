@@ -8,6 +8,7 @@
 
 #include "net_common.h"
 #include <cstdint>
+#include <cstddef>
 
 class INetwork
 {

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <thread>
 #include <csignal>
+#include <cstring>
 
 static volatile bool g_Running = true;
 
