@@ -61,4 +61,6 @@ private:
     // Game State (Server Authoritative)
     NetPlayerState m_PlayerState;
     InputCmd m_LastInputCmd;
+    float m_WeaponTimer;
+    int m_Ammo;
 };

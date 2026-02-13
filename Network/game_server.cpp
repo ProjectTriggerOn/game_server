@@ -42,6 +42,8 @@ void GameServer::Initialize(INetwork* pNetwork)
     m_PlayerState.stateFlags = NetStateFlags::IS_GROUNDED;
 
     m_LastInputCmd = {};
+    m_WeaponTimer = 0.0f;
+    m_Ammo = 30; // Default mag size
 }
 
 void GameServer::Finalize()
@@ -118,6 +120,22 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd)
     else
         flags &= ~NetStateFlags::IS_ADS;
 
+    // Weapon Action Inputs (State Machine Triggers)
+    // ALLOW RELOAD to override current state for now to fix input dropping
+    if (cmd.buttons & InputButtons::RELOAD) {
+         m_WeaponTimer = 2.5f; // Reload duration
+         if (m_Ammo > 0)
+             flags |= NetStateFlags::IS_RELOADING;
+         else
+             flags |= NetStateFlags::IS_RELOADING_EMPTY;
+         
+         m_Ammo = 30; // Refill ammo immediately (simplified)
+    }
+    else if (flags & NetStateFlags::IS_FIRING) {
+         // Simple ammo consumption
+         if (m_Ammo > 0) m_Ammo--;
+    }
+
     m_PlayerState.stateFlags = flags;
 }
 
@@ -131,6 +149,21 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd)
 void GameServer::SimulatePhysics()
 {
     const float dt = static_cast<float>(TICK_DURATION);
+
+    // Update Weapon Timer
+    if (m_WeaponTimer > 0.0f) {
+        m_WeaponTimer -= dt;
+        if (m_WeaponTimer <= 0.0f) {
+            // Timer expired, clear action flags
+            m_PlayerState.stateFlags &= ~NetStateFlags::IS_RELOADING;
+            m_PlayerState.stateFlags &= ~NetStateFlags::IS_RELOADING_EMPTY;
+        }
+    }
+    else {
+        // Ensure flags are cleared if timer is 0 (safety)
+        m_PlayerState.stateFlags &= ~NetStateFlags::IS_RELOADING;
+        m_PlayerState.stateFlags &= ~NetStateFlags::IS_RELOADING_EMPTY;
+    }
 
     // Movement parameters (must match game_client for prediction consistency)
     constexpr float MAX_WALK_SPEED = 5.0f;
