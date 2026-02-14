@@ -2,22 +2,19 @@
 // game_server.cpp
 //
 // Game Server implementation with fixed 32Hz tick rate.
-// Uses accumulator pattern for frame-rate independent simulation.
-//
-// Physics parameters match game_client MockServer for consistency.
+// Supports multiple concurrent players with per-player state tracking.
 //=============================================================================
 
 #include "game_server.h"
-#include "i_network.h"
+#include "enet_server_network.h"
 #include <cmath>
+#include <cstdio>
 
 GameServer::GameServer()
     : m_pNetwork(nullptr)
     , m_Accumulator(0.0)
     , m_ServerTime(0.0)
     , m_CurrentTick(0)
-    , m_PlayerState{}
-    , m_LastInputCmd{}
 {
 }
 
@@ -26,39 +23,63 @@ GameServer::~GameServer()
     Finalize();
 }
 
-void GameServer::Initialize(INetwork* pNetwork)
+void GameServer::Initialize(ENetServerNetwork* pNetwork)
 {
     m_pNetwork = pNetwork;
     m_Accumulator = 0.0;
     m_ServerTime = 0.0;
     m_CurrentTick = 0;
-
-    // Initialize player state
-    m_PlayerState.tickId = 0;
-    m_PlayerState.position = { 0.0f, 0.0f, -20.0f };
-    m_PlayerState.velocity = { 0.0f, 0.0f, 0.0f };
-    m_PlayerState.yaw = 0.0f;
-    m_PlayerState.pitch = 0.0f;
-    m_PlayerState.stateFlags = NetStateFlags::IS_GROUNDED;
-
-    m_LastInputCmd = {};
+    m_Players.clear();
 }
 
 void GameServer::Finalize()
 {
     m_pNetwork = nullptr;
+    m_Players.clear();
+}
+
+//-----------------------------------------------------------------------------
+// Spawn position per player ID
+//-----------------------------------------------------------------------------
+Float3 GameServer::GetSpawnPosition(uint8_t playerId)
+{
+    float offsets[] = { 0.0f, 5.0f, -5.0f, 10.0f };
+    return { offsets[playerId % 4], 0.0f, -20.0f };
+}
+
+//-----------------------------------------------------------------------------
+// Player connect/disconnect handlers
+//-----------------------------------------------------------------------------
+void GameServer::OnPlayerConnected(uint8_t playerId)
+{
+    PlayerData data;
+    data.state.tickId = m_CurrentTick;
+    data.state.position = GetSpawnPosition(playerId);
+    data.state.velocity = { 0.0f, 0.0f, 0.0f };
+    data.state.yaw = 0.0f;
+    data.state.pitch = 0.0f;
+    data.state.stateFlags = NetStateFlags::IS_GROUNDED;
+    data.lastInput = {};
+    data.reloadTimer = 0.0;
+
+    m_Players[playerId] = data;
+    printf("[GameServer] Player %u spawned at (%.1f, %.1f, %.1f)\n",
+        playerId, data.state.position.x, data.state.position.y, data.state.position.z);
+}
+
+void GameServer::OnPlayerDisconnected(uint8_t playerId)
+{
+    m_Players.erase(playerId);
+    printf("[GameServer] Player %u removed\n", playerId);
 }
 
 //-----------------------------------------------------------------------------
 // Update - Called every loop iteration
-//
-// Accumulator pattern: ensures exactly TICK_RATE ticks per second
 //-----------------------------------------------------------------------------
 void GameServer::Update(double deltaTime)
 {
     if (!m_pNetwork) return;
 
-    // Clamp deltaTime to prevent spiral of death on spikes
     const double maxDelta = TICK_DURATION * 4.0;
     deltaTime = (deltaTime > maxDelta) ? maxDelta : deltaTime;
 
@@ -79,34 +100,59 @@ void GameServer::Tick()
     m_CurrentTick++;
     m_ServerTime += TICK_DURATION;
 
-    // 1. Consume all pending input commands
-    InputCmd cmd;
-    while (m_pNetwork->ReceiveInputCmd(cmd))
+    // 1. Process player connect/disconnect events
+    ProcessPlayerEvents();
+
+    // 2. Consume all pending input commands (routed by playerId)
+    TaggedInput taggedInput;
+    while (m_pNetwork->ReceiveTaggedInput(taggedInput))
     {
-        ProcessInputCmd(cmd);
+        ProcessInputCmd(taggedInput.cmd, taggedInput.playerId);
     }
 
-    // 2. Simulate physics for this tick
+    // 3. Simulate physics for all players
     SimulatePhysics();
 
-    // 3. Update tick ID in state
-    m_PlayerState.tickId = m_CurrentTick;
+    // 4. Update tick ID in all player states
+    for (auto& [id, player] : m_Players)
+    {
+        player.state.tickId = m_CurrentTick;
+    }
 
-    // 4. Broadcast snapshot to client
-    BroadcastSnapshot();
+    // 5. Broadcast per-player snapshots
+    BroadcastSnapshots();
 }
 
 //-----------------------------------------------------------------------------
-// ProcessInputCmd - Handle input from client
+// ProcessPlayerEvents - Handle connect/disconnect from network layer
 //-----------------------------------------------------------------------------
-void GameServer::ProcessInputCmd(const InputCmd& cmd)
+void GameServer::ProcessPlayerEvents()
 {
-    m_LastInputCmd = cmd;
+    PlayerEvent evt;
+    while (m_pNetwork->PollPlayerEvent(evt))
+    {
+        if (evt.connected)
+            OnPlayerConnected(evt.playerId);
+        else
+            OnPlayerDisconnected(evt.playerId);
+    }
+}
 
-    m_PlayerState.yaw = cmd.yaw;
-    m_PlayerState.pitch = cmd.pitch;
+//-----------------------------------------------------------------------------
+// ProcessInputCmd - Handle input from a specific player
+//-----------------------------------------------------------------------------
+void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
+{
+    auto it = m_Players.find(playerId);
+    if (it == m_Players.end()) return;
 
-    uint32_t flags = m_PlayerState.stateFlags;
+    PlayerData& player = it->second;
+    player.lastInput = cmd;
+
+    player.state.yaw = cmd.yaw;
+    player.state.pitch = cmd.pitch;
+
+    uint32_t flags = player.state.stateFlags;
 
     if (cmd.buttons & InputButtons::FIRE)
         flags |= NetStateFlags::IS_FIRING;
@@ -120,19 +166,17 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd)
 
     if (cmd.buttons & InputButtons::RELOAD)
     {
-        // Start reload latch — keep IS_RELOADING active for duration
-        if (m_ReloadTimer <= 0.0)
-            m_ReloadTimer = RELOAD_DURATION;
+        if (player.reloadTimer <= 0.0)
+            player.reloadTimer = 10.0; // RELOAD_DURATION
     }
-    
-    // Reload latch timer
-    if (m_ReloadTimer > 0.0)
+
+    if (player.reloadTimer > 0.0)
     {
         flags |= NetStateFlags::IS_RELOADING;
-        m_ReloadTimer -= TICK_DURATION;
-        if (m_ReloadTimer <= 0.0)
+        player.reloadTimer -= TICK_DURATION;
+        if (player.reloadTimer <= 0.0)
         {
-            m_ReloadTimer = 0.0;
+            player.reloadTimer = 0.0;
             flags &= ~NetStateFlags::IS_RELOADING;
         }
     }
@@ -141,21 +185,27 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd)
         flags &= ~NetStateFlags::IS_RELOADING;
     }
 
-    m_PlayerState.stateFlags = flags;
+    player.state.stateFlags = flags;
 }
 
 //-----------------------------------------------------------------------------
-// SimulatePhysics - Server-side authoritative physics simulation
-//
-// CS:GO / Valorant Style Movement:
-//   - Ground: Snappy, instant response, no sliding
-//   - Air: Momentum preservation, limited air control
+// SimulatePhysics - Run physics for all players
 //-----------------------------------------------------------------------------
 void GameServer::SimulatePhysics()
 {
+    for (auto& [id, player] : m_Players)
+    {
+        SimulatePlayerPhysics(player);
+    }
+}
+
+//-----------------------------------------------------------------------------
+// SimulatePlayerPhysics - CS:GO / Valorant style movement for one player
+//-----------------------------------------------------------------------------
+void GameServer::SimulatePlayerPhysics(PlayerData& player)
+{
     const float dt = static_cast<float>(TICK_DURATION);
 
-    // Movement parameters (must match game_client for prediction consistency)
     constexpr float MAX_WALK_SPEED = 5.0f;
     constexpr float MAX_RUN_SPEED  = 8.0f;
     constexpr float GROUND_ACCEL   = 50.0f;
@@ -163,17 +213,19 @@ void GameServer::SimulatePhysics()
     constexpr float GRAVITY        = 20.0f;
     constexpr float JUMP_VELOCITY  = 8.0f;
 
-    bool isGrounded = (m_PlayerState.stateFlags & NetStateFlags::IS_GROUNDED) != 0;
+    NetPlayerState& state = player.state;
+    const InputCmd& input = player.lastInput;
 
-    // Calculate target velocity from input
-    float yaw = m_LastInputCmd.yaw;
+    bool isGrounded = (state.stateFlags & NetStateFlags::IS_GROUNDED) != 0;
+
+    float yaw = input.yaw;
     float frontX = sinf(yaw);
     float frontZ = cosf(yaw);
     float rightX = frontZ;
     float rightZ = -frontX;
 
-    float moveX = m_LastInputCmd.moveAxisX * rightX + m_LastInputCmd.moveAxisY * frontX;
-    float moveZ = m_LastInputCmd.moveAxisX * rightZ + m_LastInputCmd.moveAxisY * frontZ;
+    float moveX = input.moveAxisX * rightX + input.moveAxisY * frontX;
+    float moveZ = input.moveAxisX * rightZ + input.moveAxisY * frontZ;
 
     float moveMag = sqrtf(moveX * moveX + moveZ * moveZ);
     if (moveMag > 1.0f)
@@ -183,89 +235,104 @@ void GameServer::SimulatePhysics()
         moveMag = 1.0f;
     }
 
-    float maxSpeed = (m_LastInputCmd.buttons & InputButtons::SPRINT) ? MAX_RUN_SPEED : MAX_WALK_SPEED;
+    float maxSpeed = (input.buttons & InputButtons::SPRINT) ? MAX_RUN_SPEED : MAX_WALK_SPEED;
     float targetVelX = moveX * maxSpeed;
     float targetVelZ = moveZ * maxSpeed;
 
     if (isGrounded)
     {
-        // Ground: snappy, high acceleration
         float accelStep = GROUND_ACCEL * dt;
 
-        float diffX = targetVelX - m_PlayerState.velocity.x;
+        float diffX = targetVelX - state.velocity.x;
         if (fabsf(diffX) <= accelStep)
-            m_PlayerState.velocity.x = targetVelX;
+            state.velocity.x = targetVelX;
         else
-            m_PlayerState.velocity.x += (diffX > 0 ? accelStep : -accelStep);
+            state.velocity.x += (diffX > 0 ? accelStep : -accelStep);
 
-        float diffZ = targetVelZ - m_PlayerState.velocity.z;
+        float diffZ = targetVelZ - state.velocity.z;
         if (fabsf(diffZ) <= accelStep)
-            m_PlayerState.velocity.z = targetVelZ;
+            state.velocity.z = targetVelZ;
         else
-            m_PlayerState.velocity.z += (diffZ > 0 ? accelStep : -accelStep);
+            state.velocity.z += (diffZ > 0 ? accelStep : -accelStep);
 
-        // Jump
-        if (m_LastInputCmd.buttons & InputButtons::JUMP)
+        if (input.buttons & InputButtons::JUMP)
         {
-            m_PlayerState.velocity.y = JUMP_VELOCITY;
-            m_PlayerState.stateFlags &= ~NetStateFlags::IS_GROUNDED;
-            m_PlayerState.stateFlags |= NetStateFlags::IS_JUMPING;
+            state.velocity.y = JUMP_VELOCITY;
+            state.stateFlags &= ~NetStateFlags::IS_GROUNDED;
+            state.stateFlags |= NetStateFlags::IS_JUMPING;
             isGrounded = false;
         }
     }
     else
     {
-        // Air: momentum preservation, limited control
         float airStep = AIR_ACCEL * dt;
 
         if (moveMag > 0.01f)
         {
-            m_PlayerState.velocity.x += moveX * airStep;
-            m_PlayerState.velocity.z += moveZ * airStep;
+            state.velocity.x += moveX * airStep;
+            state.velocity.z += moveZ * airStep;
 
-            float horizSpeed = sqrtf(m_PlayerState.velocity.x * m_PlayerState.velocity.x +
-                                     m_PlayerState.velocity.z * m_PlayerState.velocity.z);
+            float horizSpeed = sqrtf(state.velocity.x * state.velocity.x +
+                                     state.velocity.z * state.velocity.z);
             if (horizSpeed > maxSpeed * 1.2f)
             {
                 float scale = (maxSpeed * 1.2f) / horizSpeed;
-                m_PlayerState.velocity.x *= scale;
-                m_PlayerState.velocity.z *= scale;
+                state.velocity.x *= scale;
+                state.velocity.z *= scale;
             }
         }
     }
 
-    // Gravity
     if (!isGrounded)
     {
-        m_PlayerState.velocity.y -= GRAVITY * dt;
+        state.velocity.y -= GRAVITY * dt;
     }
 
-    // Apply velocity to position
-    m_PlayerState.position.x += m_PlayerState.velocity.x * dt;
-    m_PlayerState.position.z += m_PlayerState.velocity.z * dt;
-    m_PlayerState.position.y += m_PlayerState.velocity.y * dt;
+    state.position.x += state.velocity.x * dt;
+    state.position.z += state.velocity.z * dt;
+    state.position.y += state.velocity.y * dt;
 
-    // Floor collision (y = 0)
-    if (m_PlayerState.position.y <= 0.0f)
+    if (state.position.y <= 0.0f)
     {
-        m_PlayerState.position.y = 0.0f;
-        m_PlayerState.velocity.y = 0.0f;
-        m_PlayerState.stateFlags |= NetStateFlags::IS_GROUNDED;
-        m_PlayerState.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        state.position.y = 0.0f;
+        state.velocity.y = 0.0f;
+        state.stateFlags |= NetStateFlags::IS_GROUNDED;
+        state.stateFlags &= ~NetStateFlags::IS_JUMPING;
     }
 }
 
 //-----------------------------------------------------------------------------
-// BroadcastSnapshot - Send authoritative state to all clients
+// BroadcastSnapshots - Send per-player snapshots
+//
+// Each player receives a Snapshot where:
+//   localPlayer = their own state
+//   remotePlayers[] = all other players' states
 //-----------------------------------------------------------------------------
-void GameServer::BroadcastSnapshot()
+void GameServer::BroadcastSnapshots()
 {
-    if (!m_pNetwork) return;
+    if (!m_pNetwork || m_Players.empty()) return;
 
-    Snapshot snapshot;
-    snapshot.tickId = m_CurrentTick;
-    snapshot.serverTime = m_ServerTime;
-    snapshot.localPlayer = m_PlayerState;
+    for (const auto& [myId, myData] : m_Players)
+    {
+        Snapshot snapshot = {};
+        snapshot.tickId = m_CurrentTick;
+        snapshot.serverTime = m_ServerTime;
+        snapshot.localPlayer = myData.state;
+        snapshot.localPlayerId = myId;
 
-    m_pNetwork->SendSnapshot(snapshot);
+        // Fill remote players (everyone except me)
+        uint8_t remoteCount = 0;
+        for (const auto& [otherId, otherData] : m_Players)
+        {
+            if (otherId == myId) continue;
+            if (remoteCount >= MAX_PLAYERS - 1) break;
+
+            snapshot.remotePlayers[remoteCount].playerId = otherId;
+            snapshot.remotePlayers[remoteCount].state = otherData.state;
+            remoteCount++;
+        }
+        snapshot.remotePlayerCount = remoteCount;
+
+        m_pNetwork->SendSnapshotToPlayer(myId, snapshot);
+    }
 }

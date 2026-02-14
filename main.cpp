@@ -37,7 +37,7 @@ int main(int argc, char* argv[])
     }
 
     printf("========================================\n");
-    printf("  TriggerOn Game Server v1.0.2\n");
+    printf("  TriggerOn Game Server v2.0.0\n");
     printf("  Tick Rate: 32Hz\n");
     printf("  Port: %u\n", port);
     printf("========================================\n");
@@ -73,10 +73,11 @@ int main(int argc, char* argv[])
         if (server.GetCurrentTick() - lastReportedTick >= 32)
         {
             lastReportedTick = server.GetCurrentTick();
-            printf("[Server] Tick: %u | Time: %.1fs | Clients: %zu\n",
+            printf("[Server] Tick: %u | Time: %.1fs | Clients: %zu | Players: %zu\n",
                 server.GetCurrentTick(),
                 server.GetServerTime(),
-                network.GetConnectedClientCount());
+                network.GetConnectedClientCount(),
+                server.GetPlayerCount());
         }
 
         // Sleep to avoid burning CPU (~1ms, well under tick duration of 31.25ms)

@@ -3,18 +3,20 @@
 // game_server.h
 //
 // Game Server with fixed-tick (32Hz) game logic.
-// Uses accumulator pattern to decouple from update loop rate.
+// Supports multiple concurrent players with per-player state tracking.
 //
 // Architecture:
 //   - Server runs at fixed 32Hz tick rate
-//   - Consumes InputCmd from client
-//   - Produces authoritative PlayerState
-//   - Broadcasts Snapshot to client
+//   - Consumes InputCmd from each connected client
+//   - Produces authoritative PlayerState per player
+//   - Broadcasts per-player Snapshot (your state + others' states)
 //=============================================================================
 
 #include "net_common.h"
+#include <unordered_map>
+#include <cstddef>
 
-class INetwork;
+class ENetServerNetwork;
 
 class GameServer
 {
@@ -22,13 +24,13 @@ public:
     //-------------------------------------------------------------------------
     // Constants
     //-------------------------------------------------------------------------
-    static constexpr double TICK_RATE = 32.0;                    // 32 ticks per second
-    static constexpr double TICK_DURATION = 1.0 / TICK_RATE;     // ~31.25ms per tick
+    static constexpr double TICK_RATE = 32.0;
+    static constexpr double TICK_DURATION = 1.0 / TICK_RATE;
 
     GameServer();
     ~GameServer();
 
-    void Initialize(INetwork* pNetwork);
+    void Initialize(ENetServerNetwork* pNetwork);
     void Finalize();
 
     //-------------------------------------------------------------------------
@@ -42,27 +44,38 @@ public:
     uint32_t GetCurrentTick() const { return m_CurrentTick; }
     double GetAccumulator() const { return m_Accumulator; }
     double GetServerTime() const { return m_ServerTime; }
-    const NetPlayerState& GetPlayerState() const { return m_PlayerState; }
+    size_t GetPlayerCount() const { return m_Players.size(); }
 
 private:
+    //-------------------------------------------------------------------------
+    // Per-player data
+    //-------------------------------------------------------------------------
+    struct PlayerData {
+        NetPlayerState state;
+        InputCmd lastInput{};
+        double reloadTimer = 0.0;
+    };
+
     void Tick();
-    void ProcessInputCmd(const InputCmd& cmd);
+    void ProcessPlayerEvents();
+    void ProcessInputCmd(const InputCmd& cmd, uint8_t playerId);
+    void SimulatePlayerPhysics(PlayerData& player);
     void SimulatePhysics();
-    void BroadcastSnapshot();
+    void BroadcastSnapshots();
+
+    void OnPlayerConnected(uint8_t playerId);
+    void OnPlayerDisconnected(uint8_t playerId);
+
+    static Float3 GetSpawnPosition(uint8_t playerId);
 
 private:
-    INetwork* m_pNetwork;
+    ENetServerNetwork* m_pNetwork;
 
     // Timing
     double m_Accumulator;
     double m_ServerTime;
     uint32_t m_CurrentTick;
 
-    // Game State (Server Authoritative)
-    NetPlayerState m_PlayerState;
-    InputCmd m_LastInputCmd;
-    
-    // Reload latch timer — keeps IS_RELOADING active for full animation duration
-    static constexpr double RELOAD_DURATION = 10.0;  // seconds
-    double m_ReloadTimer = 0.0;
+    // Per-player game state
+    std::unordered_map<uint8_t, PlayerData> m_Players;
 };
