@@ -62,6 +62,8 @@ constexpr uint32_t IS_JUMPING = 1 << 0;
 constexpr uint32_t IS_GROUNDED = 1 << 1;
 constexpr uint32_t IS_FIRING = 1 << 2;
 constexpr uint32_t IS_ADS = 1 << 3;
+constexpr uint32_t IS_RELOADING = 1 << 4;
+constexpr uint32_t IS_RELOAD_EMPTY = 1 << 5;
 } // namespace NetStateFlags
 
 //-----------------------------------------------------------------------------

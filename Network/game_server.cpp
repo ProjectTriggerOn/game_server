@@ -118,6 +118,29 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd)
     else
         flags &= ~NetStateFlags::IS_ADS;
 
+    if (cmd.buttons & InputButtons::RELOAD)
+    {
+        // Start reload latch — keep IS_RELOADING active for duration
+        if (m_ReloadTimer <= 0.0)
+            m_ReloadTimer = RELOAD_DURATION;
+    }
+    
+    // Reload latch timer
+    if (m_ReloadTimer > 0.0)
+    {
+        flags |= NetStateFlags::IS_RELOADING;
+        m_ReloadTimer -= TICK_DURATION;
+        if (m_ReloadTimer <= 0.0)
+        {
+            m_ReloadTimer = 0.0;
+            flags &= ~NetStateFlags::IS_RELOADING;
+        }
+    }
+    else
+    {
+        flags &= ~NetStateFlags::IS_RELOADING;
+    }
+
     m_PlayerState.stateFlags = flags;
 }
 
