@@ -54,6 +54,7 @@ private:
         NetPlayerState state;
         InputCmd lastInput{};
         double reloadTimer = 0.0;
+        uint8_t teamId = PlayerTeam::RED;
     };
 
     void Tick();
@@ -66,7 +67,8 @@ private:
     void OnPlayerConnected(uint8_t playerId);
     void OnPlayerDisconnected(uint8_t playerId);
 
-    static Float3 GetSpawnPosition(uint8_t playerId);
+    uint8_t AssignTeam() const;
+    static Float3 GetSpawnPosition(uint8_t playerId, uint8_t teamId);
 
 private:
     ENetServerNetwork* m_pNetwork;

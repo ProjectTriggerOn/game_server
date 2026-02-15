@@ -84,11 +84,20 @@ struct NetPlayerState {
 static constexpr uint8_t MAX_PLAYERS = 4;
 
 //-----------------------------------------------------------------------------
+// Team IDs
+//-----------------------------------------------------------------------------
+namespace PlayerTeam {
+constexpr uint8_t RED  = 0;
+constexpr uint8_t BLUE = 1;
+} // namespace PlayerTeam
+
+//-----------------------------------------------------------------------------
 // RemotePlayerEntry - Identifies a remote player's state in a Snapshot
 //-----------------------------------------------------------------------------
 struct RemotePlayerEntry {
   uint8_t playerId;
-  uint8_t padding[3];          // align to 4 bytes
+  uint8_t teamId;              // PlayerTeam::RED or BLUE
+  uint8_t padding[2];          // align to 4 bytes
   NetPlayerState state;
 };
 
@@ -105,7 +114,8 @@ struct Snapshot {
   NetPlayerState localPlayer;                       // Your authoritative state
   uint8_t localPlayerId;                            // Your player ID
   uint8_t remotePlayerCount;                        // Number of valid entries in remotePlayers[]
-  uint8_t padding_snap[2];                          // Alignment
+  uint8_t localPlayerTeam;                          // Your team (PlayerTeam::RED or BLUE)
+  uint8_t padding_snap[1];                          // Alignment
   RemotePlayerEntry remotePlayers[MAX_PLAYERS - 1]; // Other players' states
 };
 

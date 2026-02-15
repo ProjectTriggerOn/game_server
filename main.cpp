@@ -37,7 +37,7 @@ int main(int argc, char* argv[])
     }
 
     printf("========================================\n");
-    printf("  TriggerOn Game Server v2.0.0\n");
+    printf("  TriggerOn Game Server v2.0.1\n");
     printf("  Tick Rate: 32Hz\n");
     printf("  Port: %u\n", port);
     printf("========================================\n");

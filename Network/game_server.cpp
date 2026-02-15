@@ -39,12 +39,30 @@ void GameServer::Finalize()
 }
 
 //-----------------------------------------------------------------------------
-// Spawn position per player ID
+// AssignTeam - Pick the team with fewer members (tie → RED)
 //-----------------------------------------------------------------------------
-Float3 GameServer::GetSpawnPosition(uint8_t playerId)
+uint8_t GameServer::AssignTeam() const
+{
+    int redCount = 0, blueCount = 0;
+    for (const auto& [id, player] : m_Players)
+    {
+        if (player.teamId == PlayerTeam::RED)  redCount++;
+        else                                    blueCount++;
+    }
+    return (blueCount < redCount) ? PlayerTeam::BLUE : PlayerTeam::RED;
+}
+
+//-----------------------------------------------------------------------------
+// Spawn position per team + player ID
+//-----------------------------------------------------------------------------
+Float3 GameServer::GetSpawnPosition(uint8_t playerId, uint8_t teamId)
 {
     float offsets[] = { 0.0f, 5.0f, -5.0f, 10.0f };
-    return { offsets[playerId % 4], 0.0f, -20.0f };
+    float x = offsets[playerId % 4];
+    if (teamId == PlayerTeam::BLUE)
+        x = -x;  // Mirror for blue team
+    float z = (teamId == PlayerTeam::RED) ? -20.0f : 20.0f;
+    return { x, 0.0f, z };
 }
 
 //-----------------------------------------------------------------------------
@@ -52,9 +70,12 @@ Float3 GameServer::GetSpawnPosition(uint8_t playerId)
 //-----------------------------------------------------------------------------
 void GameServer::OnPlayerConnected(uint8_t playerId)
 {
+    uint8_t team = AssignTeam();
+
     PlayerData data;
+    data.teamId = team;
     data.state.tickId = m_CurrentTick;
-    data.state.position = GetSpawnPosition(playerId);
+    data.state.position = GetSpawnPosition(playerId, team);
     data.state.velocity = { 0.0f, 0.0f, 0.0f };
     data.state.yaw = 0.0f;
     data.state.pitch = 0.0f;
@@ -63,8 +84,9 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.reloadTimer = 0.0;
 
     m_Players[playerId] = data;
-    printf("[GameServer] Player %u spawned at (%.1f, %.1f, %.1f)\n",
-        playerId, data.state.position.x, data.state.position.y, data.state.position.z);
+    printf("[GameServer] Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)\n",
+        playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
+        data.state.position.x, data.state.position.y, data.state.position.z);
 }
 
 void GameServer::OnPlayerDisconnected(uint8_t playerId)
@@ -319,6 +341,7 @@ void GameServer::BroadcastSnapshots()
         snapshot.serverTime = m_ServerTime;
         snapshot.localPlayer = myData.state;
         snapshot.localPlayerId = myId;
+        snapshot.localPlayerTeam = myData.teamId;
 
         // Fill remote players (everyone except me)
         uint8_t remoteCount = 0;
@@ -328,6 +351,7 @@ void GameServer::BroadcastSnapshots()
             if (remoteCount >= MAX_PLAYERS - 1) break;
 
             snapshot.remotePlayers[remoteCount].playerId = otherId;
+            snapshot.remotePlayers[remoteCount].teamId = otherData.teamId;
             snapshot.remotePlayers[remoteCount].state = otherData.state;
             remoteCount++;
         }
