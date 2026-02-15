@@ -2,6 +2,7 @@
 // enet_server_network.cpp
 //
 // ENet-based server network implementation.
+// Supports multiple concurrent clients with per-player routing.
 //=============================================================================
 
 #include "enet_server_network.h"
@@ -40,7 +41,7 @@ void ENetServerNetwork::Initialize()
     address.port = m_Port;
 
     // Create server host: max 4 clients, 2 channels
-    m_pServer = enet_host_create(&address, 4, 2, 0, 0);
+    m_pServer = enet_host_create(&address, MAX_PLAYERS, 2, 0, 0);
     if (!m_pServer)
     {
         printf("[Server] Failed to create ENet server host on port %u.\n", m_Port);
@@ -60,6 +61,8 @@ void ENetServerNetwork::Finalize()
         enet_peer_disconnect_now(peer, 0);
     }
     m_ConnectedPeers.clear();
+    m_PeerToPlayerId.clear();
+    m_PlayerIdToPeer.clear();
 
     if (m_pServer)
     {
@@ -69,6 +72,19 @@ void ENetServerNetwork::Finalize()
 
     enet_deinitialize();
     printf("[Server] Shut down.\n");
+}
+
+//-----------------------------------------------------------------------------
+// AllocatePlayerId - Find first free ID in [0, MAX_PLAYERS)
+//-----------------------------------------------------------------------------
+uint8_t ENetServerNetwork::AllocatePlayerId()
+{
+    for (uint8_t i = 0; i < MAX_PLAYERS; i++)
+    {
+        if (m_PlayerIdToPeer.find(i) == m_PlayerIdToPeer.end())
+            return i;
+    }
+    return 0xFF; // Server full
 }
 
 //-----------------------------------------------------------------------------
@@ -85,18 +101,51 @@ void ENetServerNetwork::PollEvents()
         {
         case ENET_EVENT_TYPE_CONNECT:
         {
+            uint8_t playerId = AllocatePlayerId();
+            if (playerId == 0xFF)
+            {
+                printf("[Server] Server full, rejecting connection.\n");
+                enet_peer_disconnect_now(event.peer, 0);
+                break;
+            }
+
             m_ConnectedPeers.push_back(event.peer);
-            printf("[Server] Client connected from %x:%u. Total clients: %zu\n",
-                event.peer->address.host, event.peer->address.port, m_ConnectedPeers.size());
+            m_PeerToPlayerId[event.peer] = playerId;
+            m_PlayerIdToPeer[playerId] = event.peer;
+
+            // Queue player connect event
+            {
+                std::lock_guard<std::mutex> lock(m_EventMutex);
+                m_PlayerEventQueue.push({playerId, true});
+            }
+
+            printf("[Server] Client connected as Player %u from %x:%u. Total clients: %zu\n",
+                playerId, event.peer->address.host, event.peer->address.port, m_ConnectedPeers.size());
             break;
         }
 
         case ENET_EVENT_TYPE_DISCONNECT:
         {
+            auto it = m_PeerToPlayerId.find(event.peer);
+            if (it != m_PeerToPlayerId.end())
+            {
+                uint8_t playerId = it->second;
+                m_PlayerIdToPeer.erase(playerId);
+                m_PeerToPlayerId.erase(it);
+
+                // Queue player disconnect event
+                {
+                    std::lock_guard<std::mutex> lock(m_EventMutex);
+                    m_PlayerEventQueue.push({playerId, false});
+                }
+
+                printf("[Server] Player %u disconnected. ", playerId);
+            }
+
             m_ConnectedPeers.erase(
                 std::remove(m_ConnectedPeers.begin(), m_ConnectedPeers.end(), event.peer),
                 m_ConnectedPeers.end());
-            printf("[Server] Client disconnected. Total clients: %zu\n", m_ConnectedPeers.size());
+            printf("Total clients: %zu\n", m_ConnectedPeers.size());
             break;
         }
 
@@ -112,8 +161,15 @@ void ENetServerNetwork::PollEvents()
                     InputCmd cmd;
                     std::memcpy(&cmd, event.packet->data + 1, sizeof(InputCmd));
 
-                    std::lock_guard<std::mutex> lock(m_InputMutex);
-                    m_InputQueue.push(cmd);
+                    // Tag with the sender's playerId
+                    auto it = m_PeerToPlayerId.find(event.peer);
+                    uint8_t playerId = (it != m_PeerToPlayerId.end()) ? it->second : 0xFF;
+
+                    if (playerId != 0xFF)
+                    {
+                        std::lock_guard<std::mutex> lock(m_InputMutex);
+                        m_TaggedInputQueue.push({cmd, playerId});
+                    }
                 }
             }
             enet_packet_destroy(event.packet);
@@ -127,7 +183,69 @@ void ENetServerNetwork::PollEvents()
 }
 
 //-----------------------------------------------------------------------------
-// SendSnapshot - Broadcast to all connected clients (unreliable)
+// ReceiveTaggedInput - Pop from tagged input queue (used by GameServer)
+//-----------------------------------------------------------------------------
+bool ENetServerNetwork::ReceiveTaggedInput(TaggedInput& out)
+{
+    std::lock_guard<std::mutex> lock(m_InputMutex);
+    if (m_TaggedInputQueue.empty()) return false;
+
+    out = m_TaggedInputQueue.front();
+    m_TaggedInputQueue.pop();
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+// PollPlayerEvent - Pop connect/disconnect events
+//-----------------------------------------------------------------------------
+bool ENetServerNetwork::PollPlayerEvent(PlayerEvent& out)
+{
+    std::lock_guard<std::mutex> lock(m_EventMutex);
+    if (m_PlayerEventQueue.empty()) return false;
+
+    out = m_PlayerEventQueue.front();
+    m_PlayerEventQueue.pop();
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+// GetConnectedPlayerIds
+//-----------------------------------------------------------------------------
+std::vector<uint8_t> ENetServerNetwork::GetConnectedPlayerIds() const
+{
+    std::vector<uint8_t> ids;
+    ids.reserve(m_PlayerIdToPeer.size());
+    for (const auto& pair : m_PlayerIdToPeer)
+    {
+        ids.push_back(pair.first);
+    }
+    return ids;
+}
+
+//-----------------------------------------------------------------------------
+// SendSnapshotToPlayer - Send to a specific player by ID
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::SendSnapshotToPlayer(uint8_t playerId, const Snapshot& snapshot)
+{
+    auto it = m_PlayerIdToPeer.find(playerId);
+    if (it == m_PlayerIdToPeer.end()) return;
+
+    uint8_t buffer[1 + sizeof(Snapshot)];
+    buffer[0] = static_cast<uint8_t>(PacketType::SNAPSHOT);
+    std::memcpy(buffer + 1, &snapshot, sizeof(Snapshot));
+
+    ENetPacket* packet = enet_packet_create(
+        buffer,
+        sizeof(buffer),
+        ENET_PACKET_FLAG_UNSEQUENCED
+    );
+    enet_peer_send(it->second, 1, packet);
+
+    m_TotalSnapshotsSent++;
+}
+
+//-----------------------------------------------------------------------------
+// SendSnapshot - Broadcast same snapshot to all (INetwork compatibility)
 //-----------------------------------------------------------------------------
 void ENetServerNetwork::SendSnapshot(const Snapshot& snapshot)
 {
@@ -151,22 +269,22 @@ void ENetServerNetwork::SendSnapshot(const Snapshot& snapshot)
 }
 
 //-----------------------------------------------------------------------------
-// ReceiveInputCmd - Pop from internal queue
+// ReceiveInputCmd - INetwork compatibility (ignores playerId)
 //-----------------------------------------------------------------------------
 bool ENetServerNetwork::ReceiveInputCmd(InputCmd& outCmd)
 {
     std::lock_guard<std::mutex> lock(m_InputMutex);
-    if (m_InputQueue.empty()) return false;
+    if (m_TaggedInputQueue.empty()) return false;
 
-    outCmd = m_InputQueue.front();
-    m_InputQueue.pop();
+    outCmd = m_TaggedInputQueue.front().cmd;
+    m_TaggedInputQueue.pop();
     return true;
 }
 
 size_t ENetServerNetwork::GetInputQueueSize() const
 {
     std::lock_guard<std::mutex> lock(m_InputMutex);
-    return m_InputQueue.size();
+    return m_TaggedInputQueue.size();
 }
 
 //-----------------------------------------------------------------------------

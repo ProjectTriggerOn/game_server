@@ -62,6 +62,8 @@ constexpr uint32_t IS_JUMPING = 1 << 0;
 constexpr uint32_t IS_GROUNDED = 1 << 1;
 constexpr uint32_t IS_FIRING = 1 << 2;
 constexpr uint32_t IS_ADS = 1 << 3;
+constexpr uint32_t IS_RELOADING = 1 << 4;
+constexpr uint32_t IS_RELOAD_EMPTY = 1 << 5;
 } // namespace NetStateFlags
 
 //-----------------------------------------------------------------------------
@@ -77,15 +79,44 @@ struct NetPlayerState {
 };
 
 //-----------------------------------------------------------------------------
+// Multi-player constants
+//-----------------------------------------------------------------------------
+static constexpr uint8_t MAX_PLAYERS = 4;
+
+//-----------------------------------------------------------------------------
+// Team IDs
+//-----------------------------------------------------------------------------
+namespace PlayerTeam {
+constexpr uint8_t RED  = 0;
+constexpr uint8_t BLUE = 1;
+} // namespace PlayerTeam
+
+//-----------------------------------------------------------------------------
+// RemotePlayerEntry - Identifies a remote player's state in a Snapshot
+//-----------------------------------------------------------------------------
+struct RemotePlayerEntry {
+  uint8_t playerId;
+  uint8_t teamId;              // PlayerTeam::RED or BLUE
+  uint8_t padding[2];          // align to 4 bytes
+  NetPlayerState state;
+};
+
+//-----------------------------------------------------------------------------
 // Snapshot - Server to Client (Downstream)
 //
 // Contains all authoritative state the client needs.
-// Client uses this to correct prediction errors.
+//   localPlayer    — your own state (for client-side prediction correction)
+//   remotePlayers  — other connected players' states (for RemotePlayer rendering)
 //-----------------------------------------------------------------------------
 struct Snapshot {
-  uint32_t tickId;            // Server tick this snapshot represents
-  double serverTime;          // Server time for interpolation
-  NetPlayerState localPlayer; // Local player's authoritative state
+  uint32_t tickId;                                  // Server tick this snapshot represents
+  double serverTime;                                // Server time
+  NetPlayerState localPlayer;                       // Your authoritative state
+  uint8_t localPlayerId;                            // Your player ID
+  uint8_t remotePlayerCount;                        // Number of valid entries in remotePlayers[]
+  uint8_t localPlayerTeam;                          // Your team (PlayerTeam::RED or BLUE)
+  uint8_t padding_snap[1];                          // Alignment
+  RemotePlayerEntry remotePlayers[MAX_PLAYERS - 1]; // Other players' states
 };
 
 //-----------------------------------------------------------------------------
@@ -96,3 +127,5 @@ static_assert(sizeof(InputCmd) == 24,
               "InputCmd size changed - update network serialization");
 static_assert(sizeof(NetPlayerState) == 40,
               "NetPlayerState size changed - update network serialization");
+static_assert(sizeof(RemotePlayerEntry) == 44,
+              "RemotePlayerEntry size changed - update network serialization");
