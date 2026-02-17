@@ -44,33 +44,39 @@ inline Float3 Scale(const Float3& v, float s)
 }
 
 //-----------------------------------------------------------------------------
-// ClosestPointOnSegment — returns t in [0,1]
+// RaySphere — test ray against a sphere
+//
+// Returns true if hit, outT = entry distance along ray.
 //-----------------------------------------------------------------------------
-inline float ClosestTOnSegment(const Float3& segA, const Float3& segB,
-                                const Float3& point)
+inline bool RaySphere(const Float3& origin, const Float3& dir,
+                      const Float3& center, float radius, float& outT)
 {
-    Float3 ab = Sub(segB, segA);
-    Float3 ap = Sub(point, segA);
-    float denom = Dot(ab, ab);
-    if (denom < 1e-8f) return 0.0f;
-    float t = Dot(ap, ab) / denom;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    return t;
+    Float3 oc = Sub(origin, center);
+    float a = Dot(dir, dir);
+    float h = Dot(oc, dir);
+    float c = Dot(oc, oc) - radius * radius;
+    float disc = h * h - a * c;
+    if (disc < 0.0f) return false;
+    float sqrtDisc = sqrtf(disc);
+    float t = (-h - sqrtDisc) / a;
+    if (t < 0.0f) t = (-h + sqrtDisc) / a;
+    if (t < 0.0f) return false;
+    outT = t;
+    return true;
 }
 
 //-----------------------------------------------------------------------------
-// RayCapsule — test ray against a capsule (two hemispheres + cylinder)
+// RayCapsule — test ray against a capsule (cylinder + two hemispheres)
 //
-// Returns true if the ray hits the capsule, and outT is the hit distance.
-// Uses the "closest approach between two lines" method:
-//   Ray line: P = origin + t * dir
-//   Capsule segment: Q = segA + s * (segB - segA)
-// Find (t, s) that minimize |P - Q|, check if distance <= radius.
+// Decomposes the capsule into:
+//   1. Infinite cylinder (clamped to segment extent)
+//   2. Bottom hemisphere (sphere at segA)
+//   3. Top hemisphere (sphere at segB)
+// Returns the closest hit among all three.
 //
 // Parameters:
-//   origin     — ray start position (eye position)
-//   dir        — ray direction (normalized)
+//   origin      — ray start position (eye position)
+//   dir         — ray direction (normalized)
 //   capBottom   — capsule foot position (bottom of capsule)
 //   capHeight   — total height of capsule
 //   capRadius   — capsule radius
@@ -83,67 +89,78 @@ inline bool RayCapsule(const Float3& origin, const Float3& dir,
                        const Float3& capBottom, float capHeight, float capRadius,
                        float& outT, float maxRange = 200.0f)
 {
-    // Capsule segment: A = bottom + (0, radius, 0), B = bottom + (0, height - radius, 0)
+    // Capsule segment endpoints (sphere centers)
     Float3 segA = { capBottom.x, capBottom.y + capRadius, capBottom.z };
     Float3 segB = { capBottom.x, capBottom.y + capHeight - capRadius, capBottom.z };
-
-    // Line-segment closest approach
-    // Ray: P(t) = origin + t * dir
-    // Seg: Q(s) = segA + s * segDir,  where segDir = segB - segA
     Float3 segDir = Sub(segB, segA);
-    Float3 w0 = Sub(origin, segA);
+    float segLenSq = Dot(segDir, segDir);
 
-    float a = Dot(dir, dir);       // always 1 if dir is normalized
-    float b = Dot(dir, segDir);
-    float c = Dot(segDir, segDir);
-    float d = Dot(dir, w0);
-    float e = Dot(segDir, w0);
+    float bestT = maxRange + 1.0f;
+    bool hasHit = false;
 
-    float denom = a * c - b * b;
-
-    float t, s;
-
-    if (denom < 1e-6f)
+    // 1. Test ray against infinite cylinder, clamp to segment extent
+    if (segLenSq > 1e-8f)
     {
-        // Lines are nearly parallel
-        s = 0.0f;
-        t = -d / a;
+        float segLen = sqrtf(segLenSq);
+        Float3 axis = Scale(segDir, 1.0f / segLen);
+        Float3 oc = Sub(origin, segA);
+
+        float dDotAxis = Dot(dir, axis);
+        float ocDotAxis = Dot(oc, axis);
+
+        // Project out the capsule axis component
+        Float3 dPerp = Sub(dir, Scale(axis, dDotAxis));
+        Float3 ocPerp = Sub(oc, Scale(axis, ocDotAxis));
+
+        float a = Dot(dPerp, dPerp);
+        float b = Dot(dPerp, ocPerp);
+        float c = Dot(ocPerp, ocPerp) - capRadius * capRadius;
+
+        float disc = b * b - a * c;
+        if (disc >= 0.0f && a > 1e-8f)
+        {
+            float sqrtDisc = sqrtf(disc);
+            float t = (-b - sqrtDisc) / a;
+            if (t < 0.0f) t = (-b + sqrtDisc) / a;
+
+            if (t >= 0.0f && t <= maxRange)
+            {
+                float hitOnAxis = ocDotAxis + t * dDotAxis;
+                if (hitOnAxis >= 0.0f && hitOnAxis <= segLen)
+                {
+                    bestT = t;
+                    hasHit = true;
+                }
+            }
+        }
     }
-    else
+
+    // 2. Test against bottom hemisphere (sphere at segA)
+    float tSphere;
+    if (RaySphere(origin, dir, segA, capRadius, tSphere))
     {
-        s = (b * d - a * e) / denom;
-        t = (c * d - b * e) / denom;
+        if (tSphere <= maxRange && tSphere < bestT)
+        {
+            bestT = tSphere;
+            hasHit = true;
+        }
     }
 
-    // Clamp s to [0, 1] (capsule segment) and recompute t
-    if (s < 0.0f)
+    // 3. Test against top hemisphere (sphere at segB)
+    if (RaySphere(origin, dir, segB, capRadius, tSphere))
     {
-        s = 0.0f;
-        t = -d / a; // dot(dir, origin - segA) / dot(dir, dir)
-    }
-    else if (s > 1.0f)
-    {
-        s = 1.0f;
-        Float3 w1 = Sub(origin, segB);
-        t = -Dot(dir, w1) / a;
+        if (tSphere <= maxRange && tSphere < bestT)
+        {
+            bestT = tSphere;
+            hasHit = true;
+        }
     }
 
-    // t must be positive (ray goes forward) and within range
-    if (t < 0.0f) t = 0.0f;
-    if (t > maxRange) return false;
-
-    // Compute closest points
-    Float3 closestOnRay = Add(origin, Scale(dir, t));
-    Float3 closestOnSeg = Add(segA, Scale(segDir, s));
-    Float3 diff = Sub(closestOnRay, closestOnSeg);
-    float distSq = Dot(diff, diff);
-
-    if (distSq <= capRadius * capRadius)
+    if (hasHit)
     {
-        outT = t;
+        outT = bestT;
         return true;
     }
-
     return false;
 }
 
