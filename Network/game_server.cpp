@@ -332,6 +332,10 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
             state.stateFlags |= NetStateFlags::IS_GROUNDED;
             state.stateFlags &= ~NetStateFlags::IS_JUMPING;
         }
+        else
+        {
+            state.stateFlags &= ~NetStateFlags::IS_GROUNDED;
+        }
     }
     else
     {
