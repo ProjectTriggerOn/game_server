@@ -327,12 +327,12 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
             PLAYER_HEIGHT, CAPSULE_RADIUS, state.velocity);
         state.position = result.position;
         state.velocity = result.velocity;
-        if (result.isGrounded)
+        if (result.isGrounded && state.velocity.y <= 0.0f)
         {
             state.stateFlags |= NetStateFlags::IS_GROUNDED;
             state.stateFlags &= ~NetStateFlags::IS_JUMPING;
         }
-        else
+        else if (!result.isGrounded)
         {
             state.stateFlags &= ~NetStateFlags::IS_GROUNDED;
         }
