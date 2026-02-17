@@ -30,6 +30,11 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     m_ServerTime = 0.0;
     m_CurrentTick = 0;
     m_Players.clear();
+
+    // Register ground collider (must match client CollisionWorld)
+    m_Colliders.clear();
+    m_Colliders.push_back({ {{ -128.0f, -1.0f, -128.0f }, { 128.0f, 0.0f, 128.0f }}, true });
+    m_Colliders.push_back({ {{ 5.0f, 0.0f, 5.0f }, { 10.0f, 2.0f, 10.0f }}, true });  // Test platform
 }
 
 void GameServer::Finalize()
@@ -314,12 +319,30 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
     state.position.z += state.velocity.z * dt;
     state.position.y += state.velocity.y * dt;
 
-    if (state.position.y <= 0.0f)
+    // Collision Detection (Capsule vs World AABBs)
+    if (!m_Colliders.empty())
     {
-        state.position.y = 0.0f;
-        state.velocity.y = 0.0f;
-        state.stateFlags |= NetStateFlags::IS_GROUNDED;
-        state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        auto result = ServerCollision::ResolveCapsule(
+            m_Colliders, state.position,
+            PLAYER_HEIGHT, CAPSULE_RADIUS, state.velocity);
+        state.position = result.position;
+        state.velocity = result.velocity;
+        if (result.isGrounded)
+        {
+            state.stateFlags |= NetStateFlags::IS_GROUNDED;
+            state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        }
+    }
+    else
+    {
+        // Fallback: simple floor at y=0
+        if (state.position.y <= 0.0f)
+        {
+            state.position.y = 0.0f;
+            state.velocity.y = 0.0f;
+            state.stateFlags |= NetStateFlags::IS_GROUNDED;
+            state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        }
     }
 }
 

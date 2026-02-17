@@ -13,6 +13,7 @@
 //=============================================================================
 
 #include "net_common.h"
+#include "server_collision.h"
 #include <unordered_map>
 #include <cstddef>
 
@@ -80,4 +81,11 @@ private:
 
     // Per-player game state
     std::unordered_map<uint8_t, PlayerData> m_Players;
+
+    // Collision world for gravity
+    std::vector<ServerCollider> m_Colliders;
+
+    // Player collision parameters (must match client)
+    static constexpr float PLAYER_HEIGHT = 2.0f;
+    static constexpr float CAPSULE_RADIUS = 0.5f;
 };
