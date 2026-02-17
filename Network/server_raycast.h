@@ -155,7 +155,7 @@ inline Float3 DirectionFromYawPitch(float yaw, float pitch)
     float cosPitch = cosf(pitch);
     return {
         sinf(yaw) * cosPitch,
-        -sinf(pitch),
+        sinf(pitch),
         cosf(yaw) * cosPitch
     };
 }
