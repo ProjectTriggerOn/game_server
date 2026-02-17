@@ -116,7 +116,7 @@ inline ServerCollisionResult ResolveCapsule(
 			float dz = closestOnSeg.z - closestOnAABB.z;
 			float distSq = dx * dx + dy * dy + dz * dz;
 
-			if (distSq >= capsuleRadius * capsuleRadius)
+			if (distSq > capsuleRadius * capsuleRadius)
 				continue;
 
 			float dist = sqrtf(distSq);

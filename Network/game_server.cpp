@@ -244,6 +244,7 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
     const InputCmd& input = player.lastInput;
 
     bool isGrounded = (state.stateFlags & NetStateFlags::IS_GROUNDED) != 0;
+    bool wasGroundedAtStart = isGrounded;
 
     float yaw = input.yaw;
     float frontX = sinf(yaw);
@@ -310,7 +311,7 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
         }
     }
 
-    if (!isGrounded)
+    if (!wasGroundedAtStart)
     {
         state.velocity.y -= GRAVITY * dt;
     }
@@ -327,12 +328,12 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
             PLAYER_HEIGHT, CAPSULE_RADIUS, state.velocity);
         state.position = result.position;
         state.velocity = result.velocity;
-        if (result.isGrounded && state.velocity.y <= 0.0f)
+        if (result.isGrounded)
         {
             state.stateFlags |= NetStateFlags::IS_GROUNDED;
             state.stateFlags &= ~NetStateFlags::IS_JUMPING;
         }
-        else if (!result.isGrounded)
+        else
         {
             state.stateFlags &= ~NetStateFlags::IS_GROUNDED;
         }
