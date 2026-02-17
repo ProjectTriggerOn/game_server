@@ -7,6 +7,7 @@
 
 #include "game_server.h"
 #include "enet_server_network.h"
+#include "map_colliders.h"
 #include <cmath>
 #include <cstdio>
 
@@ -31,10 +32,31 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     m_CurrentTick = 0;
     m_Players.clear();
 
-    // Register ground collider (must match client CollisionWorld)
+    // Register colliders from shared map data (must match client)
     m_Colliders.clear();
-    m_Colliders.push_back({ {{ -128.0f, -1.0f, -128.0f }, { 128.0f, 0.0f, 128.0f }}, true });
-    m_Colliders.push_back({ {{ 5.0f, 0.0f, 5.0f }, { 10.0f, 2.0f, 10.0f }}, true });  // Test platform
+    for (int i = 0; i < MAP_COLLIDER_COUNT; i++)
+    {
+        const MapColliderDef& def = MAP_COLLIDERS[i];
+        ServerCollider sc;
+        if (def.category == MAP_CUBE)
+        {
+            // Cube: AABB = position ± 0.5
+            sc.aabb = {
+                { def.posX - 0.5f, def.posY - 0.5f, def.posZ - 0.5f },
+                { def.posX + 0.5f, def.posY + 0.5f, def.posZ + 0.5f }
+            };
+        }
+        else
+        {
+            // Explicit AABB
+            sc.aabb = {
+                { def.minX, def.minY, def.minZ },
+                { def.maxX, def.maxY, def.maxZ }
+            };
+        }
+        sc.isGround = def.isGround;
+        m_Colliders.push_back(sc);
+    }
 }
 
 void GameServer::Finalize()
