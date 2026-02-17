@@ -96,8 +96,8 @@ private:
     std::vector<ServerCollider> m_Colliders;
 
     // Player collision parameters (must match client)
-    static constexpr float PLAYER_HEIGHT = 2.0f;
-    static constexpr float CAPSULE_RADIUS = 0.5f;
+    static constexpr float PLAYER_HEIGHT = 1.6f;
+    static constexpr float CAPSULE_RADIUS = 0.3f;
 
     // Weapon parameters per team
     static constexpr double RED_RPM = 600.0;

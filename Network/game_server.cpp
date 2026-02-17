@@ -505,7 +505,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     // Cast ray from eye position
     Float3 eyePos = {
         shooter.state.position.x,
-        shooter.state.position.y + PLAYER_HEIGHT * 0.75f, // 1.5m eye height (match client camera)
+        shooter.state.position.y + 1.5f, // eye height (match client camera)
         shooter.state.position.z
     };
     Float3 rayDir = ServerRaycast::DirectionFromYawPitch(
