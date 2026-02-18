@@ -64,6 +64,7 @@ constexpr uint32_t IS_FIRING = 1 << 2;
 constexpr uint32_t IS_ADS = 1 << 3;
 constexpr uint32_t IS_RELOADING = 1 << 4;
 constexpr uint32_t IS_RELOAD_EMPTY = 1 << 5;
+constexpr uint32_t IS_DEAD = 1 << 6;
 } // namespace NetStateFlags
 
 //-----------------------------------------------------------------------------
@@ -76,6 +77,9 @@ struct NetPlayerState {
   float yaw;                  // Camera yaw
   float pitch;                // Camera pitch
   uint32_t stateFlags;        // Bitfield of StateFlags
+  uint8_t  health;            // 0-200, server authoritative
+  uint8_t  hitByPlayerId;     // 0xFF = no hit, else attacker ID
+  uint16_t fireCounter;       // Server-tracked fire count
 };
 
 //-----------------------------------------------------------------------------
@@ -125,7 +129,7 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 24,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 40,
+static_assert(sizeof(NetPlayerState) == 44,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 44,
+static_assert(sizeof(RemotePlayerEntry) == 48,
               "RemotePlayerEntry size changed - update network serialization");

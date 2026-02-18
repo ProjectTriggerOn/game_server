@@ -7,8 +7,10 @@
 
 #include "game_server.h"
 #include "enet_server_network.h"
+#include "map_colliders.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 GameServer::GameServer()
     : m_pNetwork(nullptr)
@@ -30,6 +32,20 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     m_ServerTime = 0.0;
     m_CurrentTick = 0;
     m_Players.clear();
+
+    // Register colliders from shared map data (must match client)
+    m_Colliders.clear();
+    for (int i = 0; i < MAP_COLLIDER_COUNT; i++)
+    {
+        const MapColliderDef& def = MAP_COLLIDERS[i];
+        ServerCollider sc;
+        sc.aabb = {
+            { def.minX, def.minY, def.minZ },
+            { def.maxX, def.maxY, def.maxZ }
+        };
+        sc.isGround = def.isGround;
+        m_Colliders.push_back(sc);
+    }
 }
 
 void GameServer::Finalize()
@@ -53,15 +69,27 @@ uint8_t GameServer::AssignTeam() const
 }
 
 //-----------------------------------------------------------------------------
-// Spawn position per team + player ID
+// Spawn position — random within one of 4 corner areas (4x4 each)
+//
+// Corner A (top-left):     X: -9 to -5,  Z: -9 to -5
+// Corner B (top-right):    X:  5 to  9,  Z: -9 to -5
+// Corner C (bottom-left):  X: -9 to -5,  Z:  5 to  9
+// Corner D (bottom-right): X:  5 to  9,  Z:  5 to  9
 //-----------------------------------------------------------------------------
-Float3 GameServer::GetSpawnPosition(uint8_t playerId, uint8_t teamId)
+Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t /*teamId*/)
 {
-    float offsets[] = { 0.0f, 5.0f, -5.0f, 10.0f };
-    float x = offsets[playerId % 4];
-    if (teamId == PlayerTeam::BLUE)
-        x = -x;  // Mirror for blue team
-    float z = (teamId == PlayerTeam::RED) ? -20.0f : 20.0f;
+    struct SpawnArea { float minX, maxX, minZ, maxZ; };
+    static const SpawnArea areas[4] = {
+        { -9.0f, -5.0f, -9.0f, -5.0f },  // top-left
+        {  5.0f,  9.0f, -9.0f, -5.0f },  // top-right
+        { -9.0f, -5.0f,  5.0f,  9.0f },  // bottom-left
+        {  5.0f,  9.0f,  5.0f,  9.0f },  // bottom-right
+    };
+
+    int corner = rand() % 4;
+    const SpawnArea& a = areas[corner];
+    float x = a.minX + static_cast<float>(rand()) / RAND_MAX * (a.maxX - a.minX);
+    float z = a.minZ + static_cast<float>(rand()) / RAND_MAX * (a.maxZ - a.minZ);
     return { x, 0.0f, z };
 }
 
@@ -80,8 +108,15 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.yaw = 0.0f;
     data.state.pitch = 0.0f;
     data.state.stateFlags = NetStateFlags::IS_GROUNDED;
+    data.state.health = MAX_HEALTH;
+    data.state.hitByPlayerId = 0xFF;
+    data.state.fireCounter = 0;
     data.lastInput = {};
     data.reloadTimer = 0.0;
+    data.health = MAX_HEALTH;
+    data.respawnTimer = 0.0;
+    data.fireTimer = 0.0;
+    data.fireCounter = 0;
 
     m_Players[playerId] = data;
     printf("[GameServer] Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)\n",
@@ -135,13 +170,45 @@ void GameServer::Tick()
     // 3. Simulate physics for all players
     SimulatePhysics();
 
-    // 4. Update tick ID in all player states
+    // 4. Process firing and combat for all players
+    for (auto& [id, player] : m_Players)
+    {
+        // Clear hit marker each tick
+        player.state.hitByPlayerId = 0xFF;
+
+        // Respawn timer
+        if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+        {
+            player.respawnTimer -= TICK_DURATION;
+            if (player.respawnTimer <= 0.0)
+            {
+                // Respawn
+                player.health = MAX_HEALTH;
+                player.state.stateFlags &= ~NetStateFlags::IS_DEAD;
+                player.state.stateFlags |= NetStateFlags::IS_GROUNDED;
+                player.state.position = GetSpawnPosition(id, player.teamId);
+                player.state.velocity = { 0.0f, 0.0f, 0.0f };
+                player.respawnTimer = 0.0;
+                printf("[GameServer] Player %u respawned\n", id);
+            }
+        }
+        else
+        {
+            ProcessFiring(player, id);
+        }
+
+        // Sync combat data to state
+        player.state.health = player.health;
+        player.state.fireCounter = player.fireCounter;
+    }
+
+    // 5. Update tick ID in all player states
     for (auto& [id, player] : m_Players)
     {
         player.state.tickId = m_CurrentTick;
     }
 
-    // 5. Broadcast per-player snapshots
+    // 6. Broadcast per-player snapshots
     BroadcastSnapshots();
 }
 
@@ -170,6 +237,14 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
 
     PlayerData& player = it->second;
     player.lastInput = cmd;
+
+    // Dead players: only update camera, skip all actions
+    if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+    {
+        player.state.yaw = cmd.yaw;
+        player.state.pitch = cmd.pitch;
+        return;
+    }
 
     player.state.yaw = cmd.yaw;
     player.state.pitch = cmd.pitch;
@@ -217,6 +292,9 @@ void GameServer::SimulatePhysics()
 {
     for (auto& [id, player] : m_Players)
     {
+        // Skip dead players
+        if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+            continue;
         SimulatePlayerPhysics(player);
     }
 }
@@ -239,6 +317,7 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
     const InputCmd& input = player.lastInput;
 
     bool isGrounded = (state.stateFlags & NetStateFlags::IS_GROUNDED) != 0;
+    bool wasGroundedAtStart = isGrounded;
 
     float yaw = input.yaw;
     float frontX = sinf(yaw);
@@ -305,7 +384,7 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
         }
     }
 
-    if (!isGrounded)
+    if (!wasGroundedAtStart)
     {
         state.velocity.y -= GRAVITY * dt;
     }
@@ -314,12 +393,34 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
     state.position.z += state.velocity.z * dt;
     state.position.y += state.velocity.y * dt;
 
-    if (state.position.y <= 0.0f)
+    // Collision Detection (Capsule vs World AABBs)
+    if (!m_Colliders.empty())
     {
-        state.position.y = 0.0f;
-        state.velocity.y = 0.0f;
-        state.stateFlags |= NetStateFlags::IS_GROUNDED;
-        state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        auto result = ServerCollision::ResolveCapsule(
+            m_Colliders, state.position,
+            PLAYER_HEIGHT, CAPSULE_RADIUS, state.velocity);
+        state.position = result.position;
+        state.velocity = result.velocity;
+        if (result.isGrounded)
+        {
+            state.stateFlags |= NetStateFlags::IS_GROUNDED;
+            state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        }
+        else
+        {
+            state.stateFlags &= ~NetStateFlags::IS_GROUNDED;
+        }
+    }
+    else
+    {
+        // Fallback: simple floor at y=0
+        if (state.position.y <= 0.0f)
+        {
+            state.position.y = 0.0f;
+            state.velocity.y = 0.0f;
+            state.stateFlags |= NetStateFlags::IS_GROUNDED;
+            state.stateFlags &= ~NetStateFlags::IS_JUMPING;
+        }
     }
 }
 
@@ -359,4 +460,150 @@ void GameServer::BroadcastSnapshots()
 
         m_pNetwork->SendSnapshotToPlayer(myId, snapshot);
     }
+}
+
+//-----------------------------------------------------------------------------
+// ProcessFiring - Handle fire rate and hitscan for a player
+//-----------------------------------------------------------------------------
+void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
+{
+    bool isFiring = (shooter.lastInput.buttons & InputButtons::FIRE) != 0;
+
+    if (!isFiring)
+    {
+        shooter.fireTimer = 0.0;
+        return;
+    }
+
+    // Determine RPM and damage based on team
+    double rpm = (shooter.teamId == PlayerTeam::RED) ? RED_RPM : BLUE_RPM;
+    uint8_t damage = (shooter.teamId == PlayerTeam::RED) ? RED_DAMAGE : BLUE_DAMAGE;
+    double fireInterval = 60.0 / rpm;
+
+    // First shot fires immediately; subsequent shots at RPM interval
+    bool shouldFire = false;
+    if (shooter.fireTimer <= 0.0)
+    {
+        // First press — fire immediately
+        shouldFire = true;
+        shooter.fireTimer = fireInterval;
+    }
+    else
+    {
+        shooter.fireTimer -= TICK_DURATION;
+        if (shooter.fireTimer <= 0.0)
+        {
+            shouldFire = true;
+            shooter.fireTimer += fireInterval;
+        }
+    }
+
+    if (!shouldFire) return;
+
+    // Increment fire counter
+    shooter.fireCounter++;
+
+    // Cast ray from eye position
+    Float3 eyePos = {
+        shooter.state.position.x,
+        shooter.state.position.y + 1.5f, // eye height (match client camera)
+        shooter.state.position.z
+    };
+    Float3 rayDir = ServerRaycast::DirectionFromYawPitch(
+        shooter.state.yaw, shooter.state.pitch);
+
+    // Test against all other alive players (no friendly fire)
+    // Also test against world geometry — player hit only counts if closer than world
+    uint8_t hitId = 0xFF;
+    float hitDist = 0.0f;
+    float worldDist = RaycastWorld(eyePos, rayDir);
+    if (RaycastPlayers(eyePos, rayDir, shooterId, shooter.teamId, hitId, hitDist)
+        && hitDist < worldDist)
+    {
+        // Apply damage
+        auto hitIt = m_Players.find(hitId);
+        if (hitIt != m_Players.end())
+        {
+            PlayerData& target = hitIt->second;
+            if (target.health > damage)
+            {
+                target.health -= damage;
+            }
+            else
+            {
+                target.health = 0;
+                target.state.stateFlags |= NetStateFlags::IS_DEAD;
+                target.respawnTimer = RESPAWN_TIME;
+                target.state.velocity = { 0.0f, 0.0f, 0.0f };
+                printf("[GameServer] Player %u killed Player %u\n", shooterId, hitId);
+            }
+
+            // Record hit for attacker's hit marker
+            shooter.state.hitByPlayerId = hitId;
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+// RaycastPlayers - Test ray against all alive enemy players
+//
+// Returns true if any enemy player is hit. outHitId/outDist are set to the
+// closest hit. Players on excludeTeam are skipped (no friendly fire).
+//-----------------------------------------------------------------------------
+bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
+                                 uint8_t excludeId, uint8_t excludeTeam,
+                                 uint8_t& outHitId, float& outDist)
+{
+    bool anyHit = false;
+    float closestT = 9999.0f;
+
+    for (const auto& [id, player] : m_Players)
+    {
+        // Skip self
+        if (id == excludeId) continue;
+        // Skip same team (no friendly fire)
+        if (player.teamId == excludeTeam) continue;
+        // Skip dead
+        if (player.state.stateFlags & NetStateFlags::IS_DEAD) continue;
+
+        float t = 0.0f;
+        if (ServerRaycast::RayCapsule(origin, dir,
+            player.state.position, PLAYER_HEIGHT, CAPSULE_RADIUS, t))
+        {
+            if (t < closestT)
+            {
+                closestT = t;
+                outHitId = id;
+                anyHit = true;
+            }
+        }
+    }
+
+    if (anyHit)
+        outDist = closestT;
+
+    return anyHit;
+}
+
+//-----------------------------------------------------------------------------
+// RaycastWorld - Test ray against all map AABB colliders
+//
+// Returns the closest hit distance, or a very large value if no hit.
+//-----------------------------------------------------------------------------
+float GameServer::RaycastWorld(const Float3& origin, const Float3& dir)
+{
+    float closest = 99999.0f;
+
+    for (const auto& col : m_Colliders)
+    {
+        float t = 0.0f;
+        if (ServerRaycast::RayAABB(origin, dir,
+            col.aabb.min, col.aabb.max, t))
+        {
+            if (t < closest)
+                closest = t;
+        }
+    }
+
+    return closest;
 }
