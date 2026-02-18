@@ -10,6 +10,7 @@
 #include "map_colliders.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 GameServer::GameServer()
     : m_pNetwork(nullptr)
@@ -38,22 +39,10 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     {
         const MapColliderDef& def = MAP_COLLIDERS[i];
         ServerCollider sc;
-        if (def.category == MAP_CUBE)
-        {
-            // Cube: AABB = position ± 0.5
-            sc.aabb = {
-                { def.posX - 0.5f, def.posY - 0.5f, def.posZ - 0.5f },
-                { def.posX + 0.5f, def.posY + 0.5f, def.posZ + 0.5f }
-            };
-        }
-        else
-        {
-            // Explicit AABB
-            sc.aabb = {
-                { def.minX, def.minY, def.minZ },
-                { def.maxX, def.maxY, def.maxZ }
-            };
-        }
+        sc.aabb = {
+            { def.minX, def.minY, def.minZ },
+            { def.maxX, def.maxY, def.maxZ }
+        };
         sc.isGround = def.isGround;
         m_Colliders.push_back(sc);
     }
@@ -80,15 +69,27 @@ uint8_t GameServer::AssignTeam() const
 }
 
 //-----------------------------------------------------------------------------
-// Spawn position per team + player ID
+// Spawn position — random within one of 4 corner areas (4x4 each)
+//
+// Corner A (top-left):     X: -9 to -5,  Z: -9 to -5
+// Corner B (top-right):    X:  5 to  9,  Z: -9 to -5
+// Corner C (bottom-left):  X: -9 to -5,  Z:  5 to  9
+// Corner D (bottom-right): X:  5 to  9,  Z:  5 to  9
 //-----------------------------------------------------------------------------
-Float3 GameServer::GetSpawnPosition(uint8_t playerId, uint8_t teamId)
+Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t /*teamId*/)
 {
-    float offsets[] = { 0.0f, 5.0f, -5.0f, 10.0f };
-    float x = offsets[playerId % 4];
-    if (teamId == PlayerTeam::BLUE)
-        x = -x;  // Mirror for blue team
-    float z = (teamId == PlayerTeam::RED) ? -20.0f : 20.0f;
+    struct SpawnArea { float minX, maxX, minZ, maxZ; };
+    static const SpawnArea areas[4] = {
+        { -9.0f, -5.0f, -9.0f, -5.0f },  // top-left
+        {  5.0f,  9.0f, -9.0f, -5.0f },  // top-right
+        { -9.0f, -5.0f,  5.0f,  9.0f },  // bottom-left
+        {  5.0f,  9.0f,  5.0f,  9.0f },  // bottom-right
+    };
+
+    int corner = rand() % 4;
+    const SpawnArea& a = areas[corner];
+    float x = a.minX + static_cast<float>(rand()) / RAND_MAX * (a.maxX - a.minX);
+    float z = a.minZ + static_cast<float>(rand()) / RAND_MAX * (a.maxZ - a.minZ);
     return { x, 0.0f, z };
 }
 
