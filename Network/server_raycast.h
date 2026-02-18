@@ -177,4 +177,68 @@ inline Float3 DirectionFromYawPitch(float yaw, float pitch)
     };
 }
 
+//-----------------------------------------------------------------------------
+// RayAABB — test ray against an axis-aligned bounding box (slab method)
+//
+// Returns true if hit within maxRange, outT = entry distance along ray.
+//-----------------------------------------------------------------------------
+inline bool RayAABB(const Float3& origin, const Float3& dir,
+                    const Float3& aabbMin, const Float3& aabbMax,
+                    float& outT, float maxRange = 200.0f)
+{
+    float tMin = 0.0f;
+    float tMax = maxRange;
+
+    // X axis
+    if (fabsf(dir.x) < 1e-8f)
+    {
+        if (origin.x < aabbMin.x || origin.x > aabbMax.x) return false;
+    }
+    else
+    {
+        float invD = 1.0f / dir.x;
+        float t1 = (aabbMin.x - origin.x) * invD;
+        float t2 = (aabbMax.x - origin.x) * invD;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > tMin) tMin = t1;
+        if (t2 < tMax) tMax = t2;
+        if (tMin > tMax) return false;
+    }
+
+    // Y axis
+    if (fabsf(dir.y) < 1e-8f)
+    {
+        if (origin.y < aabbMin.y || origin.y > aabbMax.y) return false;
+    }
+    else
+    {
+        float invD = 1.0f / dir.y;
+        float t1 = (aabbMin.y - origin.y) * invD;
+        float t2 = (aabbMax.y - origin.y) * invD;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > tMin) tMin = t1;
+        if (t2 < tMax) tMax = t2;
+        if (tMin > tMax) return false;
+    }
+
+    // Z axis
+    if (fabsf(dir.z) < 1e-8f)
+    {
+        if (origin.z < aabbMin.z || origin.z > aabbMax.z) return false;
+    }
+    else
+    {
+        float invD = 1.0f / dir.z;
+        float t1 = (aabbMin.z - origin.z) * invD;
+        float t2 = (aabbMax.z - origin.z) * invD;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > tMin) tMin = t1;
+        if (t2 < tMax) tMax = t2;
+        if (tMin > tMax) return false;
+    }
+
+    outT = tMin;
+    return true;
+}
+
 } // namespace ServerRaycast

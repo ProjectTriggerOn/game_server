@@ -71,6 +71,7 @@ private:
     bool RaycastPlayers(const Float3& origin, const Float3& dir,
                         uint8_t excludeId, uint8_t excludeTeam,
                         uint8_t& outHitId, float& outDist);
+    float RaycastWorld(const Float3& origin, const Float3& dir);
     void SimulatePlayerPhysics(PlayerData& player);
     void SimulatePhysics();
     void BroadcastSnapshots();

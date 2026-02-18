@@ -512,9 +512,12 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
         shooter.state.yaw, shooter.state.pitch);
 
     // Test against all other alive players (no friendly fire)
+    // Also test against world geometry — player hit only counts if closer than world
     uint8_t hitId = 0xFF;
     float hitDist = 0.0f;
-    if (RaycastPlayers(eyePos, rayDir, shooterId, shooter.teamId, hitId, hitDist))
+    float worldDist = RaycastWorld(eyePos, rayDir);
+    if (RaycastPlayers(eyePos, rayDir, shooterId, shooter.teamId, hitId, hitDist)
+        && hitDist < worldDist)
     {
         // Apply damage
         auto hitIt = m_Players.find(hitId);
@@ -579,4 +582,27 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
         outDist = closestT;
 
     return anyHit;
+}
+
+//-----------------------------------------------------------------------------
+// RaycastWorld - Test ray against all map AABB colliders
+//
+// Returns the closest hit distance, or a very large value if no hit.
+//-----------------------------------------------------------------------------
+float GameServer::RaycastWorld(const Float3& origin, const Float3& dir)
+{
+    float closest = 99999.0f;
+
+    for (const auto& col : m_Colliders)
+    {
+        float t = 0.0f;
+        if (ServerRaycast::RayAABB(origin, dir,
+            col.aabb.min, col.aabb.max, t))
+        {
+            if (t < closest)
+                closest = t;
+        }
+    }
+
+    return closest;
 }
