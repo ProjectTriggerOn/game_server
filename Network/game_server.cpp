@@ -117,6 +117,10 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.respawnTimer = 0.0;
     data.fireTimer = 0.0;
     data.fireCounter = 0;
+    data.ammo = WeaponConfig::MAG_SIZE;
+    data.ammoReserve = WeaponConfig::MAX_RESERVE;
+    data.state.ammo = WeaponConfig::MAG_SIZE;
+    data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
 
     m_Players[playerId] = data;
     printf("[GameServer] Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)\n",
@@ -189,6 +193,8 @@ void GameServer::Tick()
                 player.state.position = GetSpawnPosition(id, player.teamId);
                 player.state.velocity = { 0.0f, 0.0f, 0.0f };
                 player.respawnTimer = 0.0;
+                player.ammo = WeaponConfig::MAG_SIZE;
+                player.ammoReserve = WeaponConfig::MAX_RESERVE;
                 printf("[GameServer] Player %u respawned\n", id);
             }
         }
@@ -200,6 +206,8 @@ void GameServer::Tick()
         // Sync combat data to state
         player.state.health = player.health;
         player.state.fireCounter = player.fireCounter;
+        player.state.ammo = player.ammo;
+        player.state.ammoReserve = player.ammoReserve;
     }
 
     // 5. Update tick ID in all player states
@@ -263,8 +271,8 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
 
     if (cmd.buttons & InputButtons::RELOAD)
     {
-        if (player.reloadTimer <= 0.0)
-            player.reloadTimer = 10.0; // RELOAD_DURATION
+        if (player.reloadTimer <= 0.0 && player.ammo < WeaponConfig::MAG_SIZE && player.ammoReserve > 0)
+            player.reloadTimer = WeaponConfig::RELOAD_DURATION;
     }
 
     if (player.reloadTimer > 0.0)
@@ -275,6 +283,12 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
         {
             player.reloadTimer = 0.0;
             flags &= ~NetStateFlags::IS_RELOADING;
+
+            // Refill magazine from reserve
+            int needed = WeaponConfig::MAG_SIZE - player.ammo;
+            int refill = (player.ammoReserve >= needed) ? needed : player.ammoReserve;
+            player.ammo += static_cast<uint8_t>(refill);
+            player.ammoReserve -= static_cast<uint8_t>(refill);
         }
     }
     else
@@ -520,7 +534,13 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 
     if (!shouldFire) return;
 
-    // Increment fire counter
+    // Check ammo
+    if (shooter.ammo == 0)
+        return;
+
+    // Consume ammo and increment fire counter
+    shooter.ammo--;
+    shooter.state.ammo = shooter.ammo;
     shooter.fireCounter++;
 
     // Cast ray from eye position

@@ -81,12 +81,24 @@ struct NetPlayerState {
   uint8_t  health;            // 0-200, server authoritative
   uint8_t  hitByPlayerId;     // 0xFF = no hit, else attacker ID
   uint16_t fireCounter;       // Server-tracked fire count
+  uint8_t  ammo;              // Magazine ammo (0-30)
+  uint8_t  ammoReserve;       // Reserve ammo (0-90)
+  uint8_t  pad[2];            // pad to 4-byte alignment
 };
 
 //-----------------------------------------------------------------------------
 // Multi-player constants
 //-----------------------------------------------------------------------------
 static constexpr uint8_t MAX_PLAYERS = 4;
+
+//-----------------------------------------------------------------------------
+// Weapon / Ammo constants (shared between client and server)
+//-----------------------------------------------------------------------------
+namespace WeaponConfig {
+constexpr uint8_t MAG_SIZE = 30;
+constexpr uint8_t MAX_RESERVE = 90;
+constexpr double RELOAD_DURATION = 2.5;
+} // namespace WeaponConfig
 
 //-----------------------------------------------------------------------------
 // Team IDs
@@ -130,7 +142,7 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 24,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 44,
+static_assert(sizeof(NetPlayerState) == 48,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 48,
+static_assert(sizeof(RemotePlayerEntry) == 52,
               "RemotePlayerEntry size changed - update network serialization");
