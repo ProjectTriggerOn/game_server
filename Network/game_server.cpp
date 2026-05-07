@@ -282,6 +282,19 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
         flags &= ~NetStateFlags::IS_RELOADING;
     }
 
+    // Inspect: set when INSPECT pressed, clear on any action input
+    bool hasActionInput = (cmd.buttons & (InputButtons::FIRE | InputButtons::ADS | InputButtons::RELOAD | InputButtons::JUMP | InputButtons::SPRINT)) != 0
+        || fabsf(cmd.moveAxisX) > 0.01f || fabsf(cmd.moveAxisY) > 0.01f;
+
+    if (cmd.buttons & InputButtons::INSPECT)
+    {
+        flags |= NetStateFlags::IS_INSPECTING;
+    }
+    else if ((flags & NetStateFlags::IS_INSPECTING) && hasActionInput)
+    {
+        flags &= ~NetStateFlags::IS_INSPECTING;
+    }
+
     player.state.stateFlags = flags;
 }
 
@@ -467,6 +480,13 @@ void GameServer::BroadcastSnapshots()
 //-----------------------------------------------------------------------------
 void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 {
+    // Block firing while reloading or inspecting
+    if (shooter.state.stateFlags & (NetStateFlags::IS_RELOADING | NetStateFlags::IS_INSPECTING))
+    {
+        shooter.fireTimer = 0.0;
+        return;
+    }
+
     bool isFiring = (shooter.lastInput.buttons & InputButtons::FIRE) != 0;
 
     if (!isFiring)

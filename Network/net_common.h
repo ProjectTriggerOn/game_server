@@ -65,6 +65,7 @@ constexpr uint32_t IS_ADS = 1 << 3;
 constexpr uint32_t IS_RELOADING = 1 << 4;
 constexpr uint32_t IS_RELOAD_EMPTY = 1 << 5;
 constexpr uint32_t IS_DEAD = 1 << 6;
+constexpr uint32_t IS_INSPECTING = 1 << 7;
 } // namespace NetStateFlags
 
 //-----------------------------------------------------------------------------
