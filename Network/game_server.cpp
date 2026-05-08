@@ -103,6 +103,7 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     PlayerData data;
     data.teamId = team;
     data.state.tickId = m_CurrentTick;
+    data.state.lastProcessedInputTick = 0;
     data.state.position = GetSpawnPosition(playerId, team);
     data.state.velocity = { 0.0f, 0.0f, 0.0f };
     data.state.yaw = 0.0f;
@@ -210,10 +211,13 @@ void GameServer::Tick()
         player.state.ammoReserve = player.ammoReserve;
     }
 
-    // 5. Update tick ID in all player states
+    // 5. Update tick ID in all player states (and ack of last processed input).
+    // Clients use lastProcessedInputTick to look up the matching entry in their
+    // input-history ring buffer for prediction reconciliation (RESIM).
     for (auto& [id, player] : m_Players)
     {
         player.state.tickId = m_CurrentTick;
+        player.state.lastProcessedInputTick = player.lastInput.tickId;
     }
 
     // 6. Broadcast per-player snapshots

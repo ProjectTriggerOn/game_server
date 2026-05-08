@@ -72,18 +72,21 @@ constexpr uint32_t IS_INSPECTING = 1 << 7;
 // NetPlayerState - Authoritative player state computed by server
 //-----------------------------------------------------------------------------
 struct NetPlayerState {
-  uint32_t tickId;            // Server tick when this state was computed
-  Float3 position; // World position (server authoritative)
-  Float3 velocity; // Current velocity
-  float yaw;                  // Camera yaw
-  float pitch;                // Camera pitch
-  uint32_t stateFlags;        // Bitfield of StateFlags
-  uint8_t  health;            // 0-200, server authoritative
-  uint8_t  hitByPlayerId;     // 0xFF = no hit, else attacker ID
-  uint16_t fireCounter;       // Server-tracked fire count
-  uint8_t  ammo;              // Magazine ammo (0-30)
-  uint8_t  ammoReserve;       // Reserve ammo (0-90)
-  uint8_t  pad[2];            // pad to 4-byte alignment
+  uint32_t tickId;                 // Server tick when this state was computed
+  uint32_t lastProcessedInputTick; // Last cmd.tickId server processed for this player
+                                   //   (0 = none yet) — client uses this to look up
+                                   //   the input-history entry that produced this state.
+  Float3 position;                 // World position (server authoritative)
+  Float3 velocity;                 // Current velocity
+  float yaw;                       // Camera yaw
+  float pitch;                     // Camera pitch
+  uint32_t stateFlags;             // Bitfield of StateFlags
+  uint8_t  health;                 // 0-200, server authoritative
+  uint8_t  hitByPlayerId;          // 0xFF = no hit, else attacker ID
+  uint16_t fireCounter;            // Server-tracked fire count
+  uint8_t  ammo;                   // Magazine ammo (0-30)
+  uint8_t  ammoReserve;            // Reserve ammo (0-90)
+  uint8_t  pad[2];                 // pad to 4-byte alignment
 };
 
 //-----------------------------------------------------------------------------
@@ -142,7 +145,7 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 24,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 48,
+static_assert(sizeof(NetPlayerState) == 52,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 52,
+static_assert(sizeof(RemotePlayerEntry) == 56,
               "RemotePlayerEntry size changed - update network serialization");
