@@ -8,8 +8,8 @@
 #include "game_server.h"
 #include "enet_server_network.h"
 #include "map_colliders.h"
+#include "../server_log.h"
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 
 GameServer::GameServer()
@@ -124,7 +124,7 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
 
     m_Players[playerId] = data;
-    printf("[GameServer] Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)\n",
+    SLOG_INFO("Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)",
         playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
         data.state.position.x, data.state.position.y, data.state.position.z);
 }
@@ -132,7 +132,7 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
 void GameServer::OnPlayerDisconnected(uint8_t playerId)
 {
     m_Players.erase(playerId);
-    printf("[GameServer] Player %u removed\n", playerId);
+    SLOG_INFO("Player %u removed", playerId);
 }
 
 //-----------------------------------------------------------------------------
@@ -196,7 +196,7 @@ void GameServer::Tick()
                 player.respawnTimer = 0.0;
                 player.ammo = WeaponConfig::MAG_SIZE;
                 player.ammoReserve = WeaponConfig::MAX_RESERVE;
-                printf("[GameServer] Player %u respawned\n", id);
+                SLOG_INFO("Player %u respawned", id);
             }
         }
         else
@@ -406,9 +406,10 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
 
             float horizSpeed = sqrtf(state.velocity.x * state.velocity.x +
                                      state.velocity.z * state.velocity.z);
-            if (horizSpeed > maxSpeed * 1.2f)
+            const float airCap = maxSpeed * PhysicsConfig::AIR_STRAFE_SPEED_MULT;
+            if (horizSpeed > airCap)
             {
-                float scale = (maxSpeed * 1.2f) / horizSpeed;
+                float scale = airCap / horizSpeed;
                 state.velocity.x *= scale;
                 state.velocity.z *= scale;
             }
@@ -579,7 +580,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
                 target.state.stateFlags |= NetStateFlags::IS_DEAD;
                 target.respawnTimer = RESPAWN_TIME;
                 target.state.velocity = { 0.0f, 0.0f, 0.0f };
-                printf("[GameServer] Player %u killed Player %u\n", shooterId, hitId);
+                SLOG_INFO("Player %u killed Player %u", shooterId, hitId);
             }
 
             // Record hit for attacker's hit marker

@@ -7,6 +7,7 @@
 
 #include "enet_server_network.h"
 #include "game_server.h"
+#include "server_log.h"
 #include <cstdio>
 #include <chrono>
 #include <thread>
@@ -51,7 +52,7 @@ int main(int argc, char* argv[])
     GameServer server;
     server.Initialize(&network);
 
-    printf("[Server] Running. Press Ctrl+C to stop.\n\n");
+    SLOG_INFO("Running. Press Ctrl+C to stop.");
 
     // Server main loop
     auto lastTime = std::chrono::high_resolution_clock::now();
@@ -73,7 +74,7 @@ int main(int argc, char* argv[])
         if (server.GetCurrentTick() - lastReportedTick >= 32)
         {
             lastReportedTick = server.GetCurrentTick();
-            printf("[Server] Tick: %u | Time: %.1fs | Clients: %zu | Players: %zu\n",
+            SLOG_INFO("Tick: %u | Time: %.1fs | Clients: %zu | Players: %zu",
                 server.GetCurrentTick(),
                 server.GetServerTime(),
                 network.GetConnectedClientCount(),
@@ -84,7 +85,7 @@ int main(int argc, char* argv[])
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    printf("\n[Server] Shutting down...\n");
+    SLOG_INFO("Shutting down...");
     server.Finalize();
     network.Finalize();
 

@@ -168,7 +168,7 @@ inline ServerCollisionResult ResolveCapsule(
 				result.velocity.z -= velDotN * nz;
 			}
 
-			if (collider.isGround && ny > 0.7f)
+			if (collider.isGround && ny > PhysicsConfig::GROUND_NORMAL_THRESHOLD)
 			{
 				result.isGrounded = true;
 			}

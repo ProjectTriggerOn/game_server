@@ -112,6 +112,18 @@ constexpr uint8_t BLUE = 1;
 } // namespace PlayerTeam
 
 //-----------------------------------------------------------------------------
+// Physics constants (must match exactly between client prediction and server)
+//-----------------------------------------------------------------------------
+namespace PhysicsConfig {
+// Air strafe speed allowed slightly above ground max to enable bunny-hop momentum.
+constexpr float AIR_STRAFE_SPEED_MULT = 1.2f;
+// Minimum upward component of collision normal (ny) for a surface to count as ground.
+constexpr float GROUND_NORMAL_THRESHOLD = 0.7f;
+// Generic small epsilon used by collision/raycast math.
+constexpr float EPSILON = 1e-8f;
+} // namespace PhysicsConfig
+
+//-----------------------------------------------------------------------------
 // RemotePlayerEntry - Identifies a remote player's state in a Snapshot
 //-----------------------------------------------------------------------------
 struct RemotePlayerEntry {
