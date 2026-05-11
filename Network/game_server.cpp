@@ -9,6 +9,7 @@
 #include "enet_server_network.h"
 #include "map_colliders.h"
 #include "../server_log.h"
+#include <cfloat>
 #include <cmath>
 #include <cstdlib>
 
@@ -600,7 +601,7 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
                                  uint8_t& outHitId, float& outDist)
 {
     bool anyHit = false;
-    float closestT = 9999.0f;
+    float closestT = FLT_MAX;
 
     for (const auto& [id, player] : m_Players)
     {
@@ -637,7 +638,7 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
 //-----------------------------------------------------------------------------
 float GameServer::RaycastWorld(const Float3& origin, const Float3& dir)
 {
-    float closest = 99999.0f;
+    float closest = FLT_MAX;
 
     for (const auto& col : m_Colliders)
     {

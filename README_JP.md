@@ -104,6 +104,5 @@ Network/
 ├── server_collision.h          当たり判定（サーバー専用）
 └── server_raycast.h            レイキャストヒット判定（サーバー専用）
 ThirdParty/
-├── enet/                       ENet ネットワークライブラリ
-└── toml++/                     TOML パーサー（ヘッダーオンリー）
+└── enet/                       ENet ネットワークライブラリ（ソースからビルド）
 ```

@@ -104,7 +104,6 @@ Network/
 ├── server_collision.h          Collision math (server-only)
 └── server_raycast.h            Raycast hit detection (server-only)
 ThirdParty/
-├── enet/                       ENet networking library
-└── toml++/                     TOML config parser (header-only)
+└── enet/                       ENet networking library (built from source)
 ```
 
