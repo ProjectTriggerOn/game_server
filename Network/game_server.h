@@ -62,6 +62,9 @@ private:
         double respawnTimer = 0.0;
         double fireTimer = 0.0;
         uint16_t fireCounter = 0;
+        // Ammo
+        uint8_t ammo = WeaponConfig::MAG_SIZE;
+        uint8_t ammoReserve = WeaponConfig::MAX_RESERVE;
     };
 
     void Tick();

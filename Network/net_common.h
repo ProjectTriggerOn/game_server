@@ -65,21 +65,28 @@ constexpr uint32_t IS_ADS = 1 << 3;
 constexpr uint32_t IS_RELOADING = 1 << 4;
 constexpr uint32_t IS_RELOAD_EMPTY = 1 << 5;
 constexpr uint32_t IS_DEAD = 1 << 6;
+constexpr uint32_t IS_INSPECTING = 1 << 7;
 } // namespace NetStateFlags
 
 //-----------------------------------------------------------------------------
 // NetPlayerState - Authoritative player state computed by server
 //-----------------------------------------------------------------------------
 struct NetPlayerState {
-  uint32_t tickId;            // Server tick when this state was computed
-  Float3 position; // World position (server authoritative)
-  Float3 velocity; // Current velocity
-  float yaw;                  // Camera yaw
-  float pitch;                // Camera pitch
-  uint32_t stateFlags;        // Bitfield of StateFlags
-  uint8_t  health;            // 0-200, server authoritative
-  uint8_t  hitByPlayerId;     // 0xFF = no hit, else attacker ID
-  uint16_t fireCounter;       // Server-tracked fire count
+  uint32_t tickId;                 // Server tick when this state was computed
+  uint32_t lastProcessedInputTick; // Last cmd.tickId server processed for this player
+                                   //   (0 = none yet) — client uses this to look up
+                                   //   the input-history entry that produced this state.
+  Float3 position;                 // World position (server authoritative)
+  Float3 velocity;                 // Current velocity
+  float yaw;                       // Camera yaw
+  float pitch;                     // Camera pitch
+  uint32_t stateFlags;             // Bitfield of StateFlags
+  uint8_t  health;                 // 0-200, server authoritative
+  uint8_t  hitByPlayerId;          // 0xFF = no hit, else attacker ID
+  uint16_t fireCounter;            // Server-tracked fire count
+  uint8_t  ammo;                   // Magazine ammo (0-30)
+  uint8_t  ammoReserve;            // Reserve ammo (0-90)
+  uint8_t  pad[2];                 // pad to 4-byte alignment
 };
 
 //-----------------------------------------------------------------------------
@@ -88,12 +95,33 @@ struct NetPlayerState {
 static constexpr uint8_t MAX_PLAYERS = 4;
 
 //-----------------------------------------------------------------------------
+// Weapon / Ammo constants (shared between client and server)
+//-----------------------------------------------------------------------------
+namespace WeaponConfig {
+constexpr uint8_t MAG_SIZE = 30;
+constexpr uint8_t MAX_RESERVE = 90;
+constexpr double RELOAD_DURATION = 2.5;
+} // namespace WeaponConfig
+
+//-----------------------------------------------------------------------------
 // Team IDs
 //-----------------------------------------------------------------------------
 namespace PlayerTeam {
 constexpr uint8_t RED  = 0;
 constexpr uint8_t BLUE = 1;
 } // namespace PlayerTeam
+
+//-----------------------------------------------------------------------------
+// Physics constants (must match exactly between client prediction and server)
+//-----------------------------------------------------------------------------
+namespace PhysicsConfig {
+// Air strafe speed allowed slightly above ground max to enable bunny-hop momentum.
+constexpr float AIR_STRAFE_SPEED_MULT = 1.2f;
+// Minimum upward component of collision normal (ny) for a surface to count as ground.
+constexpr float GROUND_NORMAL_THRESHOLD = 0.7f;
+// Generic small epsilon used by collision/raycast math.
+constexpr float EPSILON = 1e-8f;
+} // namespace PhysicsConfig
 
 //-----------------------------------------------------------------------------
 // RemotePlayerEntry - Identifies a remote player's state in a Snapshot
@@ -129,7 +157,7 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 24,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 44,
+static_assert(sizeof(NetPlayerState) == 52,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 48,
+static_assert(sizeof(RemotePlayerEntry) == 56,
               "RemotePlayerEntry size changed - update network serialization");

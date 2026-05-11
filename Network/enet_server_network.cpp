@@ -7,9 +7,10 @@
 
 #include "enet_server_network.h"
 #include "net_packet.h"
+#include "../server_log.h"
 #include <cstring>
-#include <cstdio>
 #include <algorithm>
+#include <cmath>
 
 ENetServerNetwork::ENetServerNetwork()
     : m_pServer(nullptr)
@@ -32,7 +33,7 @@ void ENetServerNetwork::Initialize()
 {
     if (enet_initialize() != 0)
     {
-        printf("[Server] Failed to initialize ENet.\n");
+        SLOG_ERROR("Failed to initialize ENet.");
         return;
     }
 
@@ -44,12 +45,12 @@ void ENetServerNetwork::Initialize()
     m_pServer = enet_host_create(&address, MAX_PLAYERS, 2, 0, 0);
     if (!m_pServer)
     {
-        printf("[Server] Failed to create ENet server host on port %u.\n", m_Port);
+        SLOG_ERROR("Failed to create ENet server host on port %u.", m_Port);
         enet_deinitialize();
         return;
     }
 
-    printf("[Server] Listening on port %u.\n", m_Port);
+    SLOG_INFO("Listening on port %u.", m_Port);
     m_TotalSnapshotsSent = 0;
 }
 
@@ -71,7 +72,7 @@ void ENetServerNetwork::Finalize()
     }
 
     enet_deinitialize();
-    printf("[Server] Shut down.\n");
+    SLOG_INFO("Shut down.");
 }
 
 //-----------------------------------------------------------------------------
@@ -104,7 +105,7 @@ void ENetServerNetwork::PollEvents()
             uint8_t playerId = AllocatePlayerId();
             if (playerId == 0xFF)
             {
-                printf("[Server] Server full, rejecting connection.\n");
+                SLOG_WARN("Server full, rejecting connection.");
                 enet_peer_disconnect_now(event.peer, 0);
                 break;
             }
@@ -119,7 +120,7 @@ void ENetServerNetwork::PollEvents()
                 m_PlayerEventQueue.push({playerId, true});
             }
 
-            printf("[Server] Client connected as Player %u from %x:%u. Total clients: %zu\n",
+            SLOG_INFO("Client connected as Player %u from %x:%u. Total clients: %zu",
                 playerId, event.peer->address.host, event.peer->address.port, m_ConnectedPeers.size());
             break;
         }
@@ -139,13 +140,18 @@ void ENetServerNetwork::PollEvents()
                     m_PlayerEventQueue.push({playerId, false});
                 }
 
-                printf("[Server] Player %u disconnected. ", playerId);
+                m_ConnectedPeers.erase(
+                    std::remove(m_ConnectedPeers.begin(), m_ConnectedPeers.end(), event.peer),
+                    m_ConnectedPeers.end());
+                SLOG_INFO("Player %u disconnected. Total clients: %zu",
+                    playerId, m_ConnectedPeers.size());
+                break;
             }
 
             m_ConnectedPeers.erase(
                 std::remove(m_ConnectedPeers.begin(), m_ConnectedPeers.end(), event.peer),
                 m_ConnectedPeers.end());
-            printf("Total clients: %zu\n", m_ConnectedPeers.size());
+            SLOG_INFO("Unknown peer disconnected. Total clients: %zu", m_ConnectedPeers.size());
             break;
         }
 
@@ -160,6 +166,18 @@ void ENetServerNetwork::PollEvents()
                 {
                     InputCmd cmd;
                     std::memcpy(&cmd, event.packet->data + 1, sizeof(InputCmd));
+
+                    // Reject NaN/Inf in any float field — they would propagate through
+                    // physics and corrupt every player's state, then be broadcast to all
+                    // clients (1-player DoS attack on the whole match).
+                    if (!std::isfinite(cmd.moveAxisX) ||
+                        !std::isfinite(cmd.moveAxisY) ||
+                        !std::isfinite(cmd.yaw) ||
+                        !std::isfinite(cmd.pitch))
+                    {
+                        enet_packet_destroy(event.packet);
+                        break;
+                    }
 
                     // Tag with the sender's playerId
                     auto it = m_PeerToPlayerId.find(event.peer);
@@ -239,6 +257,10 @@ void ENetServerNetwork::SendSnapshotToPlayer(uint8_t playerId, const Snapshot& s
         sizeof(buffer),
         ENET_PACKET_FLAG_UNSEQUENCED
     );
+    // enet_packet_create returns NULL on allocation failure — passing NULL
+    // to enet_peer_send dereferences it and crashes the server.
+    if (!packet) return;
+
     enet_peer_send(it->second, 1, packet);
 
     m_TotalSnapshotsSent++;
@@ -262,6 +284,7 @@ void ENetServerNetwork::SendSnapshot(const Snapshot& snapshot)
             sizeof(buffer),
             ENET_PACKET_FLAG_UNSEQUENCED
         );
+        if (!packet) continue;
         enet_peer_send(peer, 1, packet);
     }
 

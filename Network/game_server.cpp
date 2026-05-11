@@ -8,8 +8,9 @@
 #include "game_server.h"
 #include "enet_server_network.h"
 #include "map_colliders.h"
+#include "../server_log.h"
+#include <cfloat>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 
 GameServer::GameServer()
@@ -103,6 +104,7 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     PlayerData data;
     data.teamId = team;
     data.state.tickId = m_CurrentTick;
+    data.state.lastProcessedInputTick = 0;
     data.state.position = GetSpawnPosition(playerId, team);
     data.state.velocity = { 0.0f, 0.0f, 0.0f };
     data.state.yaw = 0.0f;
@@ -117,9 +119,13 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.respawnTimer = 0.0;
     data.fireTimer = 0.0;
     data.fireCounter = 0;
+    data.ammo = WeaponConfig::MAG_SIZE;
+    data.ammoReserve = WeaponConfig::MAX_RESERVE;
+    data.state.ammo = WeaponConfig::MAG_SIZE;
+    data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
 
     m_Players[playerId] = data;
-    printf("[GameServer] Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)\n",
+    SLOG_INFO("Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)",
         playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
         data.state.position.x, data.state.position.y, data.state.position.z);
 }
@@ -127,7 +133,7 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
 void GameServer::OnPlayerDisconnected(uint8_t playerId)
 {
     m_Players.erase(playerId);
-    printf("[GameServer] Player %u removed\n", playerId);
+    SLOG_INFO("Player %u removed", playerId);
 }
 
 //-----------------------------------------------------------------------------
@@ -189,7 +195,9 @@ void GameServer::Tick()
                 player.state.position = GetSpawnPosition(id, player.teamId);
                 player.state.velocity = { 0.0f, 0.0f, 0.0f };
                 player.respawnTimer = 0.0;
-                printf("[GameServer] Player %u respawned\n", id);
+                player.ammo = WeaponConfig::MAG_SIZE;
+                player.ammoReserve = WeaponConfig::MAX_RESERVE;
+                SLOG_INFO("Player %u respawned", id);
             }
         }
         else
@@ -200,12 +208,17 @@ void GameServer::Tick()
         // Sync combat data to state
         player.state.health = player.health;
         player.state.fireCounter = player.fireCounter;
+        player.state.ammo = player.ammo;
+        player.state.ammoReserve = player.ammoReserve;
     }
 
-    // 5. Update tick ID in all player states
+    // 5. Update tick ID in all player states (and ack of last processed input).
+    // Clients use lastProcessedInputTick to look up the matching entry in their
+    // input-history ring buffer for prediction reconciliation (RESIM).
     for (auto& [id, player] : m_Players)
     {
         player.state.tickId = m_CurrentTick;
+        player.state.lastProcessedInputTick = player.lastInput.tickId;
     }
 
     // 6. Broadcast per-player snapshots
@@ -263,8 +276,8 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
 
     if (cmd.buttons & InputButtons::RELOAD)
     {
-        if (player.reloadTimer <= 0.0)
-            player.reloadTimer = 10.0; // RELOAD_DURATION
+        if (player.reloadTimer <= 0.0 && player.ammo < WeaponConfig::MAG_SIZE && player.ammoReserve > 0)
+            player.reloadTimer = WeaponConfig::RELOAD_DURATION;
     }
 
     if (player.reloadTimer > 0.0)
@@ -275,11 +288,30 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
         {
             player.reloadTimer = 0.0;
             flags &= ~NetStateFlags::IS_RELOADING;
+
+            // Refill magazine from reserve
+            int needed = WeaponConfig::MAG_SIZE - player.ammo;
+            int refill = (player.ammoReserve >= needed) ? needed : player.ammoReserve;
+            player.ammo += static_cast<uint8_t>(refill);
+            player.ammoReserve -= static_cast<uint8_t>(refill);
         }
     }
     else
     {
         flags &= ~NetStateFlags::IS_RELOADING;
+    }
+
+    // Inspect: set when INSPECT pressed, clear on any action input
+    bool hasActionInput = (cmd.buttons & (InputButtons::FIRE | InputButtons::ADS | InputButtons::RELOAD | InputButtons::JUMP | InputButtons::SPRINT)) != 0
+        || fabsf(cmd.moveAxisX) > 0.01f || fabsf(cmd.moveAxisY) > 0.01f;
+
+    if (cmd.buttons & InputButtons::INSPECT)
+    {
+        flags |= NetStateFlags::IS_INSPECTING;
+    }
+    else if ((flags & NetStateFlags::IS_INSPECTING) && hasActionInput)
+    {
+        flags &= ~NetStateFlags::IS_INSPECTING;
     }
 
     player.state.stateFlags = flags;
@@ -375,9 +407,10 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
 
             float horizSpeed = sqrtf(state.velocity.x * state.velocity.x +
                                      state.velocity.z * state.velocity.z);
-            if (horizSpeed > maxSpeed * 1.2f)
+            const float airCap = maxSpeed * PhysicsConfig::AIR_STRAFE_SPEED_MULT;
+            if (horizSpeed > airCap)
             {
-                float scale = (maxSpeed * 1.2f) / horizSpeed;
+                float scale = airCap / horizSpeed;
                 state.velocity.x *= scale;
                 state.velocity.z *= scale;
             }
@@ -467,6 +500,13 @@ void GameServer::BroadcastSnapshots()
 //-----------------------------------------------------------------------------
 void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 {
+    // Block firing while reloading or inspecting
+    if (shooter.state.stateFlags & (NetStateFlags::IS_RELOADING | NetStateFlags::IS_INSPECTING))
+    {
+        shooter.fireTimer = 0.0;
+        return;
+    }
+
     bool isFiring = (shooter.lastInput.buttons & InputButtons::FIRE) != 0;
 
     if (!isFiring)
@@ -500,7 +540,13 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 
     if (!shouldFire) return;
 
-    // Increment fire counter
+    // Check ammo
+    if (shooter.ammo == 0)
+        return;
+
+    // Consume ammo and increment fire counter
+    shooter.ammo--;
+    shooter.state.ammo = shooter.ammo;
     shooter.fireCounter++;
 
     // Cast ray from eye position
@@ -535,7 +581,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
                 target.state.stateFlags |= NetStateFlags::IS_DEAD;
                 target.respawnTimer = RESPAWN_TIME;
                 target.state.velocity = { 0.0f, 0.0f, 0.0f };
-                printf("[GameServer] Player %u killed Player %u\n", shooterId, hitId);
+                SLOG_INFO("Player %u killed Player %u", shooterId, hitId);
             }
 
             // Record hit for attacker's hit marker
@@ -555,7 +601,7 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
                                  uint8_t& outHitId, float& outDist)
 {
     bool anyHit = false;
-    float closestT = 9999.0f;
+    float closestT = FLT_MAX;
 
     for (const auto& [id, player] : m_Players)
     {
@@ -592,7 +638,7 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
 //-----------------------------------------------------------------------------
 float GameServer::RaycastWorld(const Float3& origin, const Float3& dir)
 {
-    float closest = 99999.0f;
+    float closest = FLT_MAX;
 
     for (const auto& col : m_Colliders)
     {
