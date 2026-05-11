@@ -10,6 +10,7 @@
 #include "../server_log.h"
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 ENetServerNetwork::ENetServerNetwork()
     : m_pServer(nullptr)
@@ -166,6 +167,18 @@ void ENetServerNetwork::PollEvents()
                     InputCmd cmd;
                     std::memcpy(&cmd, event.packet->data + 1, sizeof(InputCmd));
 
+                    // Reject NaN/Inf in any float field — they would propagate through
+                    // physics and corrupt every player's state, then be broadcast to all
+                    // clients (1-player DoS attack on the whole match).
+                    if (!std::isfinite(cmd.moveAxisX) ||
+                        !std::isfinite(cmd.moveAxisY) ||
+                        !std::isfinite(cmd.yaw) ||
+                        !std::isfinite(cmd.pitch))
+                    {
+                        enet_packet_destroy(event.packet);
+                        break;
+                    }
+
                     // Tag with the sender's playerId
                     auto it = m_PeerToPlayerId.find(event.peer);
                     uint8_t playerId = (it != m_PeerToPlayerId.end()) ? it->second : 0xFF;
@@ -244,6 +257,10 @@ void ENetServerNetwork::SendSnapshotToPlayer(uint8_t playerId, const Snapshot& s
         sizeof(buffer),
         ENET_PACKET_FLAG_UNSEQUENCED
     );
+    // enet_packet_create returns NULL on allocation failure — passing NULL
+    // to enet_peer_send dereferences it and crashes the server.
+    if (!packet) return;
+
     enet_peer_send(it->second, 1, packet);
 
     m_TotalSnapshotsSent++;
@@ -267,6 +284,7 @@ void ENetServerNetwork::SendSnapshot(const Snapshot& snapshot)
             sizeof(buffer),
             ENET_PACKET_FLAG_UNSEQUENCED
         );
+        if (!packet) continue;
         enet_peer_send(peer, 1, packet);
     }
 
