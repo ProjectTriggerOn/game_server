@@ -100,7 +100,10 @@ static constexpr uint8_t MAX_PLAYERS = 4;
 namespace WeaponConfig {
 constexpr uint8_t MAG_SIZE = 30;
 constexpr uint8_t MAX_RESERVE = 90;
-constexpr double RELOAD_DURATION = 2.5;
+// Reload duration = FBX animation length × 0.9 (visual completion point)
+// Measured from red_arm003: reload_ammo_left=2.133s, reload_out_of_ammo=3.000s
+constexpr double RELOAD_DURATION = 1.9197;             // index 8 (reload_ammo_left)
+constexpr double RELOAD_OUT_OF_AMMO_DURATION = 2.7000; // index 9 (reload_out_of_ammo)
 } // namespace WeaponConfig
 
 //-----------------------------------------------------------------------------

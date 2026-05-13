@@ -166,17 +166,24 @@ void GameServer::Tick()
     // 1. Process player connect/disconnect events
     ProcessPlayerEvents();
 
-    // 2. Consume all pending input commands (routed by playerId)
+    // 2. Update reload timers once per tick (BEFORE input so newly-started reloads
+    //    this tick last exactly RELOAD_DURATION rather than RELOAD_DURATION - TICK_DURATION)
+    for (auto& [id, player] : m_Players)
+    {
+        UpdatePlayerReloadTimer(player);
+    }
+
+    // 3. Consume all pending input commands (routed by playerId)
     TaggedInput taggedInput;
     while (m_pNetwork->ReceiveTaggedInput(taggedInput))
     {
         ProcessInputCmd(taggedInput.cmd, taggedInput.playerId);
     }
 
-    // 3. Simulate physics for all players
+    // 4. Simulate physics for all players
     SimulatePhysics();
 
-    // 4. Process firing and combat for all players
+    // 5. Process firing and combat for all players
     for (auto& [id, player] : m_Players)
     {
         // Clear hit marker each tick
@@ -197,6 +204,12 @@ void GameServer::Tick()
                 player.respawnTimer = 0.0;
                 player.ammo = WeaponConfig::MAG_SIZE;
                 player.ammoReserve = WeaponConfig::MAX_RESERVE;
+                // Reset reload state — a player killed mid-reload should wake up clean,
+                // not stuck with phantom IS_RELOADING blocking fire until the old timer expires.
+                player.reloadTimer = 0.0;
+                player.state.stateFlags &= ~(NetStateFlags::IS_RELOADING | NetStateFlags::IS_RELOAD_EMPTY);
+                // Reset edge-detection so any held button across death/respawn isn't mis-detected.
+                player.prevButtons = 0;
                 SLOG_INFO("Player %u respawned", id);
             }
         }
@@ -249,6 +262,9 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     if (it == m_Players.end()) return;
 
     PlayerData& player = it->second;
+    uint32_t prevButtons = player.prevButtons;
+    player.prevButtons = cmd.buttons;
+    uint32_t newlyPressed = cmd.buttons & ~prevButtons;  // 0→1 edges
     player.lastInput = cmd;
 
     // Dead players: only update camera, skip all actions
@@ -277,28 +293,30 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     if (cmd.buttons & InputButtons::RELOAD)
     {
         if (player.reloadTimer <= 0.0 && player.ammo < WeaponConfig::MAG_SIZE && player.ammoReserve > 0)
-            player.reloadTimer = WeaponConfig::RELOAD_DURATION;
-    }
-
-    if (player.reloadTimer > 0.0)
-    {
-        flags |= NetStateFlags::IS_RELOADING;
-        player.reloadTimer -= TICK_DURATION;
-        if (player.reloadTimer <= 0.0)
         {
-            player.reloadTimer = 0.0;
-            flags &= ~NetStateFlags::IS_RELOADING;
-
-            // Refill magazine from reserve
-            int needed = WeaponConfig::MAG_SIZE - player.ammo;
-            int refill = (player.ammoReserve >= needed) ? needed : player.ammoReserve;
-            player.ammo += static_cast<uint8_t>(refill);
-            player.ammoReserve -= static_cast<uint8_t>(refill);
+            if (player.ammo == 0) {
+                player.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
+                flags |= NetStateFlags::IS_RELOAD_EMPTY;
+            } else {
+                player.reloadTimer = WeaponConfig::RELOAD_DURATION;
+            }
+            // Set IS_RELOADING immediately so ProcessFiring's gate blocks fire this tick.
+            // UpdatePlayerReloadTimer already ran for this tick, so this won't be decremented
+            // until next tick — giving the reload exactly RELOAD_DURATION before completion.
+            flags |= NetStateFlags::IS_RELOADING;
         }
     }
-    else
+
+    // Interrupt reload on trigger-edges (FIRE/ADS/SPRINT/JUMP)
+    constexpr uint32_t INTERRUPT_MASK =
+        InputButtons::FIRE | InputButtons::ADS |
+        InputButtons::SPRINT | InputButtons::JUMP;
+    if (player.reloadTimer > 0.0 && (newlyPressed & INTERRUPT_MASK))
     {
+        player.reloadTimer = 0.0;
         flags &= ~NetStateFlags::IS_RELOADING;
+        flags &= ~NetStateFlags::IS_RELOAD_EMPTY;
+        // No ammo refill on interrupt
     }
 
     // Inspect: set when INSPECT pressed, clear on any action input
@@ -315,6 +333,39 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     }
 
     player.state.stateFlags = flags;
+}
+
+//-----------------------------------------------------------------------------
+// UpdatePlayerReloadTimer - Decrement reload timer once per tick
+// MUST be called exactly once per Tick(), BEFORE InputCmd processing — this
+// ensures reloads started in ProcessInputCmd last exactly RELOAD_DURATION
+// (no same-tick decrement) and matches ProcessFiring's auto-reload duration.
+//-----------------------------------------------------------------------------
+void GameServer::UpdatePlayerReloadTimer(PlayerData& player)
+{
+    uint32_t& flags = player.state.stateFlags;
+
+    if (player.reloadTimer > 0.0)
+    {
+        flags |= NetStateFlags::IS_RELOADING;
+        player.reloadTimer -= TICK_DURATION;
+        if (player.reloadTimer <= 0.0)
+        {
+            player.reloadTimer = 0.0;
+            flags &= ~NetStateFlags::IS_RELOADING;
+            flags &= ~NetStateFlags::IS_RELOAD_EMPTY;
+
+            // Refill magazine from reserve
+            int needed = WeaponConfig::MAG_SIZE - player.ammo;
+            int refill = (player.ammoReserve >= needed) ? needed : player.ammoReserve;
+            player.ammo += static_cast<uint8_t>(refill);
+            player.ammoReserve -= static_cast<uint8_t>(refill);
+        }
+    }
+    else
+    {
+        flags &= ~NetStateFlags::IS_RELOADING;
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -542,12 +593,27 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 
     // Check ammo
     if (shooter.ammo == 0)
+    {
+        // Auto-reload: handles empty-fire after interrupted reload, or held FIRE on empty mag
+        if (shooter.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
+            shooter.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
+            shooter.state.stateFlags |= NetStateFlags::IS_RELOADING;
+            shooter.state.stateFlags |= NetStateFlags::IS_RELOAD_EMPTY;
+        }
         return;
+    }
 
     // Consume ammo and increment fire counter
     shooter.ammo--;
     shooter.state.ammo = shooter.ammo;
     shooter.fireCounter++;
+
+    // Auto-reload IMMEDIATELY when last bullet just fired
+    if (shooter.ammo == 0 && shooter.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
+        shooter.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
+        shooter.state.stateFlags |= NetStateFlags::IS_RELOADING;
+        shooter.state.stateFlags |= NetStateFlags::IS_RELOAD_EMPTY;
+    }
 
     // Cast ray from eye position
     Float3 eyePos = {
