@@ -92,7 +92,7 @@ struct NetPlayerState {
 //-----------------------------------------------------------------------------
 // Multi-player constants
 //-----------------------------------------------------------------------------
-static constexpr uint8_t MAX_PLAYERS = 4;
+static constexpr uint8_t MAX_PLAYERS = 10; // RED 5 + BLUE 5
 
 //-----------------------------------------------------------------------------
 // Weapon / Ammo constants (shared between client and server)
@@ -164,3 +164,7 @@ static_assert(sizeof(NetPlayerState) == 52,
               "NetPlayerState size changed - update network serialization");
 static_assert(sizeof(RemotePlayerEntry) == 56,
               "RemotePlayerEntry size changed - update network serialization");
+// Snapshot scales with MAX_PLAYERS; this guards that the 72-byte header layout
+// and the RemotePlayerEntry array stay wire-compatible (no padding drift).
+static_assert(sizeof(Snapshot) == 72 + 56 * (MAX_PLAYERS - 1),
+              "Snapshot layout changed - update network serialization");

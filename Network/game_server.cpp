@@ -56,41 +56,42 @@ void GameServer::Finalize()
 }
 
 //-----------------------------------------------------------------------------
-// AssignTeam - Pick the team with fewer members (tie → RED)
+// AssignTeam - Balance teams, capped at MAX_TEAM_SIZE (MAX_PLAYERS / 2) each.
+// A full team forces the new player onto the other side; otherwise the smaller
+// team is chosen (tie → RED). With the ENet host capped at MAX_PLAYERS this
+// keeps a 5v5 split.
 //-----------------------------------------------------------------------------
 uint8_t GameServer::AssignTeam() const
 {
+    constexpr int MAX_TEAM_SIZE = MAX_PLAYERS / 2;
     int redCount = 0, blueCount = 0;
     for (const auto& [id, player] : m_Players)
     {
         if (player.teamId == PlayerTeam::RED)  redCount++;
         else                                    blueCount++;
     }
+    if (redCount >= MAX_TEAM_SIZE)  return PlayerTeam::BLUE;
+    if (blueCount >= MAX_TEAM_SIZE) return PlayerTeam::RED;
     return (blueCount < redCount) ? PlayerTeam::BLUE : PlayerTeam::RED;
 }
 
 //-----------------------------------------------------------------------------
-// Spawn position — random within one of 4 corner areas (4x4 each)
+// Spawn position — team-based strips on opposite sides of the map.
 //
-// Corner A (top-left):     X: -9 to -5,  Z: -9 to -5
-// Corner B (top-right):    X:  5 to  9,  Z: -9 to -5
-// Corner C (bottom-left):  X: -9 to -5,  Z:  5 to  9
-// Corner D (bottom-right): X:  5 to  9,  Z:  5 to  9
+// RED  spawns on the -Z side strip:  X in [-9, 9], Z in [-9, -6]
+// BLUE spawns on the +Z side strip:  X in [-9, 9], Z in [ 6,  9]
+// Both strips clear the four central blocks (which occupy Z in [-5,-2] and
+// [2,5]; see map_colliders.h) and are wide enough to spread 5 players.
 //-----------------------------------------------------------------------------
-Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t /*teamId*/)
+Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t teamId)
 {
-    struct SpawnArea { float minX, maxX, minZ, maxZ; };
-    static const SpawnArea areas[4] = {
-        { -9.0f, -5.0f, -9.0f, -5.0f },  // top-left
-        {  5.0f,  9.0f, -9.0f, -5.0f },  // top-right
-        { -9.0f, -5.0f,  5.0f,  9.0f },  // bottom-left
-        {  5.0f,  9.0f,  5.0f,  9.0f },  // bottom-right
-    };
+    const float minX = -9.0f, maxX = 9.0f;
+    float minZ, maxZ;
+    if (teamId == PlayerTeam::RED) { minZ = -9.0f; maxZ = -6.0f; }
+    else                          { minZ =  6.0f; maxZ =  9.0f; }
 
-    int corner = rand() % 4;
-    const SpawnArea& a = areas[corner];
-    float x = a.minX + static_cast<float>(rand()) / RAND_MAX * (a.maxX - a.minX);
-    float z = a.minZ + static_cast<float>(rand()) / RAND_MAX * (a.maxZ - a.minZ);
+    float x = minX + static_cast<float>(rand()) / RAND_MAX * (maxX - minX);
+    float z = minZ + static_cast<float>(rand()) / RAND_MAX * (maxZ - minZ);
     return { x, 0.0f, z };
 }
 
