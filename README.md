@@ -12,7 +12,7 @@ Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on
 - **32 Hz fixed tick rate** with accumulator-based timestep
 - **UDP networking** via ENet
 - **Team-based combat** — RED vs BLUE with asymmetric weapon stats
-- **Up to 4 players** concurrent
+- **Up to 10 players** concurrent (5v5: RED 5 + BLUE 5)
 - **Docker-ready** with multi-stage build
 
 ## Requirements
@@ -73,7 +73,7 @@ docker compose up -d
 | Parameter | Value |
 |-----------|-------|
 | Tick rate | 32 Hz (31.25 ms/tick) |
-| Max players | 4 |
+| Max players | 10 (RED 5 + BLUE 5) |
 
 ## Architecture
 
