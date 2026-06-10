@@ -55,6 +55,7 @@ private:
     struct PlayerData {
         NetPlayerState state;
         InputCmd lastInput{};
+        uint32_t prevButtons = 0;  // Previous cmd.buttons for edge detection
         double reloadTimer = 0.0;
         uint8_t teamId = PlayerTeam::RED;
         // Combat
@@ -70,6 +71,7 @@ private:
     void Tick();
     void ProcessPlayerEvents();
     void ProcessInputCmd(const InputCmd& cmd, uint8_t playerId);
+    void UpdatePlayerReloadTimer(PlayerData& player);
     void ProcessFiring(PlayerData& shooter, uint8_t shooterId);
     bool RaycastPlayers(const Float3& origin, const Float3& dir,
                         uint8_t excludeId, uint8_t excludeTeam,

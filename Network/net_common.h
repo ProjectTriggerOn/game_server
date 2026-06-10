@@ -92,7 +92,7 @@ struct NetPlayerState {
 //-----------------------------------------------------------------------------
 // Multi-player constants
 //-----------------------------------------------------------------------------
-static constexpr uint8_t MAX_PLAYERS = 4;
+static constexpr uint8_t MAX_PLAYERS = 10; // RED 5 + BLUE 5
 
 //-----------------------------------------------------------------------------
 // Weapon / Ammo constants (shared between client and server)
@@ -100,7 +100,10 @@ static constexpr uint8_t MAX_PLAYERS = 4;
 namespace WeaponConfig {
 constexpr uint8_t MAG_SIZE = 30;
 constexpr uint8_t MAX_RESERVE = 90;
-constexpr double RELOAD_DURATION = 2.5;
+// Reload duration = FBX animation length × 0.9 (visual completion point)
+// Measured from red_arm003: reload_ammo_left=2.133s, reload_out_of_ammo=3.000s
+constexpr double RELOAD_DURATION = 1.9197;             // index 8 (reload_ammo_left)
+constexpr double RELOAD_OUT_OF_AMMO_DURATION = 2.7000; // index 9 (reload_out_of_ammo)
 } // namespace WeaponConfig
 
 //-----------------------------------------------------------------------------
@@ -161,3 +164,7 @@ static_assert(sizeof(NetPlayerState) == 52,
               "NetPlayerState size changed - update network serialization");
 static_assert(sizeof(RemotePlayerEntry) == 56,
               "RemotePlayerEntry size changed - update network serialization");
+// Snapshot scales with MAX_PLAYERS; this guards that the 72-byte header layout
+// and the RemotePlayerEntry array stay wire-compatible (no padding drift).
+static_assert(sizeof(Snapshot) == 72 + 56 * (MAX_PLAYERS - 1),
+              "Snapshot layout changed - update network serialization");
