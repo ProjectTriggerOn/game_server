@@ -13,6 +13,10 @@
 #include <cmath>
 #include <cstdlib>
 
+// Per-shot lag-compensation log (verification aid — flip off once verified;
+// at 600-800 RPM this is ~10-13 lines/s per firing player)
+static constexpr bool LAGCOMP_LOG = true;
+
 GameServer::GameServer()
     : m_pNetwork(nullptr)
     , m_Accumulator(0.0)
@@ -226,13 +230,22 @@ void GameServer::Tick()
         player.state.ammoReserve = player.ammoReserve;
     }
 
-    // 5. Update tick ID in all player states (and ack of last processed input).
-    // Clients use lastProcessedInputTick to look up the matching entry in their
-    // input-history ring buffer for prediction reconciliation (RESIM).
+    // 5. Update tick ID in all player states (and ack of last processed input),
+    // and record lag-compensation history. Clients use lastProcessedInputTick
+    // to look up the matching entry in their input-history ring buffer for
+    // prediction reconciliation (RESIM). The history record captures exactly
+    // the state BroadcastSnapshots() is about to send (incl. respawn teleports),
+    // so a client-reported viewTick maps back to what that client rendered.
     for (auto& [id, player] : m_Players)
     {
         player.state.tickId = m_CurrentTick;
         player.state.lastProcessedInputTick = player.lastInput.tickId;
+
+        PositionHistoryEntry& h =
+            player.history[m_CurrentTick % PlayerData::POSITION_HISTORY_SIZE];
+        h.tick = m_CurrentTick;
+        h.position = player.state.position;
+        h.alive = (player.state.stateFlags & NetStateFlags::IS_DEAD) == 0;
     }
 
     // 6. Broadcast per-player snapshots
@@ -625,13 +638,48 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     Float3 rayDir = ServerRaycast::DirectionFromYawPitch(
         shooter.state.yaw, shooter.state.pitch);
 
-    // Test against all other alive players (no friendly fire)
-    // Also test against world geometry — player hit only counts if closer than world
+    // Lag compensation: clamp the client-reported view tick into the allowed
+    // rewind window (anti-cheat bound — a hacked client claiming an ancient
+    // tick gets the oldest allowed time, a future tick gets "now").
+    uint32_t viewTick = shooter.lastInput.viewTick;
+    float viewFrac = shooter.lastInput.viewTickFrac;
+    if (viewTick != 0)
+    {
+        const uint32_t minTick = (m_CurrentTick > LagCompConfig::MAX_REWIND_TICKS)
+            ? m_CurrentTick - LagCompConfig::MAX_REWIND_TICKS : 1u;
+        if (viewTick < minTick) viewTick = minTick;
+        if (viewTick > m_CurrentTick)
+        {
+            viewTick = m_CurrentTick;
+            viewFrac = 0.0f;  // never extrapolate forward server-side
+        }
+        if (!(viewFrac >= 0.0f && viewFrac < 1.0f)) viewFrac = 0.0f;  // NaN-safe
+    }
+
+    // Test against all other alive players (no friendly fire), with target
+    // hitboxes rewound to the time the shooter actually SAW them.
+    // Also test against world geometry — player hit only counts if closer than
+    // world (static geometry needs no rewind).
     uint8_t hitId = 0xFF;
     float hitDist = 0.0f;
     float worldDist = RaycastWorld(eyePos, rayDir);
-    if (RaycastPlayers(eyePos, rayDir, shooterId, shooter.teamId, hitId, hitDist)
-        && hitDist < worldDist)
+    bool didHit = RaycastPlayers(eyePos, rayDir, shooterId, shooter.teamId,
+                                 viewTick, viewFrac, hitId, hitDist)
+                  && hitDist < worldDist;
+
+    if (LAGCOMP_LOG && viewTick != 0)
+    {
+        const double rewindTicks =
+            static_cast<double>(m_CurrentTick - viewTick) - viewFrac;
+        SLOG_INFO("[LAGCOMP] shooter=%u view=%u+%.2f rewind=%.1ft (%.0fms) hit=%s id=%u dist=%.2f",
+                  shooterId, viewTick, viewFrac,
+                  rewindTicks, rewindTicks * TICK_DURATION * 1000.0,
+                  didHit ? "yes" : "no",
+                  didHit ? hitId : 0xFF,
+                  didHit ? hitDist : 0.0f);
+    }
+
+    if (didHit)
     {
         // Apply damage
         auto hitIt = m_Players.find(hitId);
@@ -658,13 +706,78 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 }
 
 //-----------------------------------------------------------------------------
+// GetRewoundPosition - Lag compensation: where was this player at the
+// (fractional) tick the shooter was viewing?
+//
+// History for tick N is recorded at the END of Tick() N, so during the
+// current tick's ProcessFiring the buffer holds ticks <= m_CurrentTick - 1
+// and the current tick's post-physics position is the live state. All
+// fallbacks therefore return the live position — which is also the correct
+// "no compensation" behavior.
+//-----------------------------------------------------------------------------
+Float3 GameServer::GetRewoundPosition(const PlayerData& target,
+                                      uint32_t viewTick, float viewFrac) const
+{
+    // 0 = "no data" sentinel; >= current tick = "no lag" → live position
+    if (viewTick == 0 || viewTick >= m_CurrentTick)
+        return target.state.position;
+
+    const PositionHistoryEntry& a =
+        target.history[viewTick % PlayerData::POSITION_HISTORY_SIZE];
+    if (a.tick != viewTick)  // older than the buffer / never written
+        return target.state.position;
+
+    const Float3 posA = a.position;
+    if (viewFrac <= 0.0f) return posA;
+
+    // Endpoint B = entry for viewTick+1, or the live position when viewTick+1
+    // is the in-flight current tick (physics ran, history not yet written).
+    Float3 posB;
+    bool haveB = false;
+    if (viewTick + 1 == m_CurrentTick)
+    {
+        posB = target.state.position;
+        haveB = true;
+    }
+    else
+    {
+        const PositionHistoryEntry& b =
+            target.history[(viewTick + 1) % PlayerData::POSITION_HISTORY_SIZE];
+        if (b.tick == viewTick + 1 && b.alive)
+        {
+            posB = b.position;
+            haveB = true;
+        }
+    }
+    if (!haveB) return posA;
+
+    // Don't lerp across a respawn teleport — the midpoint never existed.
+    const float dx = posB.x - posA.x;
+    const float dy = posB.y - posA.y;
+    const float dz = posB.z - posA.z;
+    if (dx * dx + dy * dy + dz * dz >
+        REWIND_TELEPORT_GUARD * REWIND_TELEPORT_GUARD)
+        return posA;
+
+    return { posA.x + dx * viewFrac,
+             posA.y + dy * viewFrac,
+             posA.z + dz * viewFrac };
+}
+
+//-----------------------------------------------------------------------------
 // RaycastPlayers - Test ray against all alive enemy players
 //
 // Returns true if any enemy player is hit. outHitId/outDist are set to the
 // closest hit. Players on excludeTeam are skipped (no friendly fire).
+//
+// Lag compensation: each target's capsule is rewound to viewTick+viewFrac
+// (the time the shooter was viewing) before the ray test. viewTick == 0
+// disables rewind (capsules at live positions). Damage is still applied to
+// the live player by the caller.
 //-----------------------------------------------------------------------------
 bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
                                  uint8_t excludeId, uint8_t excludeTeam,
+                                 uint32_t viewTick, float viewFrac,
                                  uint8_t& outHitId, float& outDist)
 {
     bool anyHit = false;
@@ -679,9 +792,20 @@ bool GameServer::RaycastPlayers(const Float3& origin, const Float3& dir,
         // Skip dead
         if (player.state.stateFlags & NetStateFlags::IS_DEAD) continue;
 
+        // Skip players who were dead at the time the shooter saw (their
+        // rendered model was dead/hidden then — no shooting "ghosts")
+        if (viewTick != 0 && viewTick < m_CurrentTick)
+        {
+            const PositionHistoryEntry& h =
+                player.history[viewTick % PlayerData::POSITION_HISTORY_SIZE];
+            if (h.tick == viewTick && !h.alive) continue;
+        }
+
+        const Float3 capsulePos = GetRewoundPosition(player, viewTick, viewFrac);
+
         float t = 0.0f;
         if (ServerRaycast::RayCapsule(origin, dir,
-            player.state.position, PLAYER_HEIGHT, CAPSULE_RADIUS, t))
+            capsulePos, PLAYER_HEIGHT, CAPSULE_RADIUS, t))
         {
             if (t < closestT)
             {

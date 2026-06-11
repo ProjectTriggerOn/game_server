@@ -79,7 +79,7 @@ docker compose up -d
 
 The server follows a **server-authoritative** model:
 
-- **Client → Server**: `InputCmd` (24 bytes) — player intent only (movement axes, yaw/pitch, button bitfield)
+- **Client → Server**: `InputCmd` (32 bytes) — player intent only (movement axes, yaw/pitch, button bitfield, viewed-tick for lag compensation)
 - **Server → Client**: `Snapshot` — authoritative world state (positions, velocities, health, flags)
 
 The server never trusts client positions. All movement, collision, and combat are simulated server-side from input commands.

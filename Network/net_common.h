@@ -51,6 +51,11 @@ struct InputCmd {
   float yaw;        // Camera horizontal angle (radians)
   float pitch;      // Camera vertical angle (radians)
   uint32_t buttons; // Bitfield of InputButtons
+  // Lag compensation: the (fractional) server tick the client was VIEWING when
+  // this command was generated (remote players render interp-delayed, so the
+  // shooter aims at the past). Server rewinds hitboxes to this time on fire.
+  uint32_t viewTick;   // Server tick being viewed; 0 = no data, do NOT rewind
+  float viewTickFrac;  // [0,1) sub-tick interpolation fraction toward viewTick+1
 };
 
 //-----------------------------------------------------------------------------
@@ -127,6 +132,16 @@ constexpr float EPSILON = 1e-8f;
 } // namespace PhysicsConfig
 
 //-----------------------------------------------------------------------------
+// Lag compensation constants (shared between client and server)
+//-----------------------------------------------------------------------------
+namespace LagCompConfig {
+// Max ticks the server will rewind hitboxes for a shot (anti-cheat bound).
+// 16 ticks = 500ms @ 32Hz — covers 100ms client interp delay + high one-way
+// latency. Client-reported viewTick older than this is clamped.
+constexpr uint32_t MAX_REWIND_TICKS = 16;
+} // namespace LagCompConfig
+
+//-----------------------------------------------------------------------------
 // RemotePlayerEntry - Identifies a remote player's state in a Snapshot
 //-----------------------------------------------------------------------------
 struct RemotePlayerEntry {
@@ -158,7 +173,7 @@ struct Snapshot {
 // Size guards for network serialization (memcpy)
 // If these fire, struct layout changed and both client/server must be updated.
 //-----------------------------------------------------------------------------
-static_assert(sizeof(InputCmd) == 24,
+static_assert(sizeof(InputCmd) == 32,
               "InputCmd size changed - update network serialization");
 static_assert(sizeof(NetPlayerState) == 52,
               "NetPlayerState size changed - update network serialization");
