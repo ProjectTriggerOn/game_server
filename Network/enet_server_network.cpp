@@ -169,11 +169,13 @@ void ENetServerNetwork::PollEvents()
 
                     // Reject NaN/Inf in any float field — they would propagate through
                     // physics and corrupt every player's state, then be broadcast to all
-                    // clients (1-player DoS attack on the whole match).
+                    // clients (1-player DoS attack on the whole match). viewTickFrac
+                    // feeds the lag-comp rewind lerp, so it gets the same gate.
                     if (!std::isfinite(cmd.moveAxisX) ||
                         !std::isfinite(cmd.moveAxisY) ||
                         !std::isfinite(cmd.yaw) ||
-                        !std::isfinite(cmd.pitch))
+                        !std::isfinite(cmd.pitch) ||
+                        !std::isfinite(cmd.viewTickFrac))
                     {
                         enet_packet_destroy(event.packet);
                         break;

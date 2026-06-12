@@ -50,6 +50,15 @@ public:
 
 private:
     //-------------------------------------------------------------------------
+    // Lag compensation: one historical record per tick (ring buffer slot)
+    //-------------------------------------------------------------------------
+    struct PositionHistoryEntry {
+        uint32_t tick = 0;       // 0 = slot never written (m_CurrentTick starts at 1)
+        Float3 position{};
+        bool alive = false;      // !(IS_DEAD) at record time
+    };
+
+    //-------------------------------------------------------------------------
     // Per-player data
     //-------------------------------------------------------------------------
     struct PlayerData {
@@ -66,6 +75,11 @@ private:
         // Ammo
         uint8_t ammo = WeaponConfig::MAG_SIZE;
         uint8_t ammoReserve = WeaponConfig::MAX_RESERVE;
+        // Lag compensation: per-tick position history, written at the end of
+        // Tick() — exactly the state BroadcastSnapshots() sends (including
+        // respawn teleports). Indexed by tick % POSITION_HISTORY_SIZE.
+        static constexpr size_t POSITION_HISTORY_SIZE = 64;  // 2s @ 32Hz (> MAX_REWIND_TICKS)
+        PositionHistoryEntry history[POSITION_HISTORY_SIZE]{};
     };
 
     void Tick();
@@ -75,7 +89,10 @@ private:
     void ProcessFiring(PlayerData& shooter, uint8_t shooterId);
     bool RaycastPlayers(const Float3& origin, const Float3& dir,
                         uint8_t excludeId, uint8_t excludeTeam,
+                        uint32_t viewTick, float viewFrac,  // 0 = no rewind
                         uint8_t& outHitId, float& outDist);
+    Float3 GetRewoundPosition(const PlayerData& target,
+                              uint32_t viewTick, float viewFrac) const;
     float RaycastWorld(const Float3& origin, const Float3& dir);
     void SimulatePlayerPhysics(PlayerData& player);
     void SimulatePhysics();
@@ -104,6 +121,10 @@ private:
     // Player collision parameters (must match client)
     static constexpr float PLAYER_HEIGHT = 1.6f;
     static constexpr float CAPSULE_RADIUS = 0.3f;
+
+    // Lag compensation: never lerp history across a jump larger than this —
+    // it is a respawn teleport, not movement (max legit move/tick ≈ 0.3m).
+    static constexpr float REWIND_TELEPORT_GUARD = 2.0f;
 
     // Weapon parameters per team
     static constexpr double RED_RPM = 600.0;
