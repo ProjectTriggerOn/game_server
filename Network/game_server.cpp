@@ -38,6 +38,15 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     m_CurrentTick = 0;
     m_Players.clear();
 
+    // Fresh match
+    m_MatchState = MatchState::PLAYING;
+    m_RedScore = 0;
+    m_BlueScore = 0;
+    m_WinningTeam = MatchTeam::NONE;
+    m_MatchTimeRemaining = MatchConfig::MATCH_DURATION;
+    m_KillSeq = 0;
+    for (auto& e : m_RecentKills) e = {};
+
     // Register colliders from shared map data (must match client)
     m_Colliders.clear();
     for (int i = 0; i < MAP_COLLIDER_COUNT; i++)
@@ -118,12 +127,16 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.health = MAX_HEALTH;
     data.state.hitByPlayerId = 0xFF;
     data.state.fireCounter = 0;
+    data.state.kills = 0;
+    data.state.deaths = 0;
     data.lastInput = {};
     data.reloadTimer = 0.0;
     data.health = MAX_HEALTH;
     data.respawnTimer = 0.0;
     data.fireTimer = 0.0;
     data.fireCounter = 0;
+    data.kills = 0;
+    data.deaths = 0;
     data.ammo = WeaponConfig::MAG_SIZE;
     data.ammoReserve = WeaponConfig::MAX_RESERVE;
     data.state.ammo = WeaponConfig::MAG_SIZE;
@@ -188,39 +201,44 @@ void GameServer::Tick()
     // 4. Simulate physics for all players
     SimulatePhysics();
 
-    // 5. Process firing and combat for all players
+    // 5. Process firing and combat for all players. When the match has ENDED
+    //    combat freezes (no firing, no respawns) — players hold their final
+    //    positions and the world broadcasts the frozen end state.
     for (auto& [id, player] : m_Players)
     {
         // Clear hit marker each tick
         player.state.hitByPlayerId = 0xFF;
 
-        // Respawn timer
-        if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+        if (m_MatchState == MatchState::PLAYING)
         {
-            player.respawnTimer -= TICK_DURATION;
-            if (player.respawnTimer <= 0.0)
+            // Respawn timer
+            if (player.state.stateFlags & NetStateFlags::IS_DEAD)
             {
-                // Respawn
-                player.health = MAX_HEALTH;
-                player.state.stateFlags &= ~NetStateFlags::IS_DEAD;
-                player.state.stateFlags |= NetStateFlags::IS_GROUNDED;
-                player.state.position = GetSpawnPosition(id, player.teamId);
-                player.state.velocity = { 0.0f, 0.0f, 0.0f };
-                player.respawnTimer = 0.0;
-                player.ammo = WeaponConfig::MAG_SIZE;
-                player.ammoReserve = WeaponConfig::MAX_RESERVE;
-                // Reset reload state — a player killed mid-reload should wake up clean,
-                // not stuck with phantom IS_RELOADING blocking fire until the old timer expires.
-                player.reloadTimer = 0.0;
-                player.state.stateFlags &= ~(NetStateFlags::IS_RELOADING | NetStateFlags::IS_RELOAD_EMPTY);
-                // Reset edge-detection so any held button across death/respawn isn't mis-detected.
-                player.prevButtons = 0;
-                SLOG_INFO("Player %u respawned", id);
+                player.respawnTimer -= TICK_DURATION;
+                if (player.respawnTimer <= 0.0)
+                {
+                    // Respawn
+                    player.health = MAX_HEALTH;
+                    player.state.stateFlags &= ~NetStateFlags::IS_DEAD;
+                    player.state.stateFlags |= NetStateFlags::IS_GROUNDED;
+                    player.state.position = GetSpawnPosition(id, player.teamId);
+                    player.state.velocity = { 0.0f, 0.0f, 0.0f };
+                    player.respawnTimer = 0.0;
+                    player.ammo = WeaponConfig::MAG_SIZE;
+                    player.ammoReserve = WeaponConfig::MAX_RESERVE;
+                    // Reset reload state — a player killed mid-reload should wake up clean,
+                    // not stuck with phantom IS_RELOADING blocking fire until the old timer expires.
+                    player.reloadTimer = 0.0;
+                    player.state.stateFlags &= ~(NetStateFlags::IS_RELOADING | NetStateFlags::IS_RELOAD_EMPTY);
+                    // Reset edge-detection so any held button across death/respawn isn't mis-detected.
+                    player.prevButtons = 0;
+                    SLOG_INFO("Player %u respawned", id);
+                }
             }
-        }
-        else
-        {
-            ProcessFiring(player, id);
+            else
+            {
+                ProcessFiring(player, id);
+            }
         }
 
         // Sync combat data to state
@@ -228,6 +246,8 @@ void GameServer::Tick()
         player.state.fireCounter = player.fireCounter;
         player.state.ammo = player.ammo;
         player.state.ammoReserve = player.ammoReserve;
+        player.state.kills = player.kills;
+        player.state.deaths = player.deaths;
     }
 
     // 5. Update tick ID in all player states (and ack of last processed input),
@@ -246,6 +266,27 @@ void GameServer::Tick()
         h.tick = m_CurrentTick;
         h.position = player.state.position;
         h.alive = (player.state.stateFlags & NetStateFlags::IS_DEAD) == 0;
+    }
+
+    // 5c. Match clock + win condition: score limit OR time limit, whichever
+    //     fires first. On end, latch the winning team and freeze (see step 5).
+    //     TODO(match): persistent-server rematch/rotation after ENDED.
+    if (m_MatchState == MatchState::PLAYING)
+    {
+        m_MatchTimeRemaining -= TICK_DURATION;
+        const bool scoreOut = (m_RedScore >= MatchConfig::SCORE_LIMIT) ||
+                              (m_BlueScore >= MatchConfig::SCORE_LIMIT);
+        const bool timeOut = (m_MatchTimeRemaining <= 0.0);
+        if (scoreOut || timeOut)
+        {
+            if (m_MatchTimeRemaining < 0.0) m_MatchTimeRemaining = 0.0;
+            m_MatchState = MatchState::ENDED;
+            m_WinningTeam = (m_RedScore > m_BlueScore) ? PlayerTeam::RED
+                          : (m_BlueScore > m_RedScore) ? PlayerTeam::BLUE
+                          : MatchTeam::DRAW;
+            SLOG_INFO("Match ended: RED %u BLUE %u winner=%u",
+                m_RedScore, m_BlueScore, m_WinningTeam);
+        }
     }
 
     // 6. Broadcast per-player snapshots
@@ -542,6 +583,16 @@ void GameServer::BroadcastSnapshots()
         snapshot.localPlayerId = myId;
         snapshot.localPlayerTeam = myData.teamId;
 
+        // Global match / scoring state (identical for every player's snapshot)
+        snapshot.matchState         = m_MatchState;
+        snapshot.winningTeam        = m_WinningTeam;
+        snapshot.redScore           = m_RedScore;
+        snapshot.blueScore          = m_BlueScore;
+        snapshot.matchTimeRemaining = static_cast<float>(m_MatchTimeRemaining);
+        snapshot.latestKillSeq      = m_KillSeq;
+        for (int k = 0; k < KILL_FEED_SIZE; ++k)
+            snapshot.recentKills[k] = m_RecentKills[k];
+
         // Fill remote players (everyone except me)
         uint8_t remoteCount = 0;
         for (const auto& [otherId, otherData] : m_Players)
@@ -697,6 +748,21 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
                 target.respawnTimer = RESPAWN_TIME;
                 target.state.velocity = { 0.0f, 0.0f, 0.0f };
                 SLOG_INFO("Player %u killed Player %u", shooterId, hitId);
+
+                // --- scoring (friendly fire is off, so killer/victim are
+                //     always on opposing teams) -------------------------------
+                shooter.kills++;
+                target.deaths++;
+                if (shooter.teamId == PlayerTeam::RED) m_RedScore++;
+                else                                   m_BlueScore++;
+
+                // kill-feed ring write: slot = seq % size; latestKillSeq = m_KillSeq
+                KillFeedEntry& kf = m_RecentKills[m_KillSeq % KILL_FEED_SIZE];
+                kf.killerId   = shooterId;
+                kf.victimId   = hitId;
+                kf.killerTeam = shooter.teamId;
+                kf.victimTeam = target.teamId;
+                m_KillSeq++;
             }
 
             // Record hit for attacker's hit marker

@@ -72,6 +72,9 @@ private:
         double respawnTimer = 0.0;
         double fireTimer = 0.0;
         uint16_t fireCounter = 0;
+        // Score (mirrored into state.kills/deaths each tick)
+        uint16_t kills = 0;
+        uint16_t deaths = 0;
         // Ammo
         uint8_t ammo = WeaponConfig::MAG_SIZE;
         uint8_t ammoReserve = WeaponConfig::MAX_RESERVE;
@@ -114,6 +117,15 @@ private:
 
     // Per-player game state
     std::unordered_map<uint8_t, PlayerData> m_Players;
+
+    // Match / scoring state (broadcast in every Snapshot header)
+    uint8_t  m_MatchState = MatchState::PLAYING;
+    uint16_t m_RedScore = 0;
+    uint16_t m_BlueScore = 0;
+    uint8_t  m_WinningTeam = MatchTeam::NONE;
+    double   m_MatchTimeRemaining = MatchConfig::MATCH_DURATION;
+    uint32_t m_KillSeq = 0;  // total kills; also wire latestKillSeq
+    KillFeedEntry m_RecentKills[KILL_FEED_SIZE] = {};
 
     // Collision world for gravity
     std::vector<ServerCollider> m_Colliders;
