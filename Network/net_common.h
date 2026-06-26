@@ -91,7 +91,9 @@ struct NetPlayerState {
   uint16_t fireCounter;            // Server-tracked fire count
   uint8_t  ammo;                   // Magazine ammo (0-30)
   uint8_t  ammoReserve;            // Reserve ammo (0-90)
-  uint8_t  pad[2];                 // pad to 4-byte alignment
+  uint16_t kills;                  // Score: kills by this player
+  uint16_t deaths;                 // Score: times this player died
+  uint8_t  pad[2];                 // pad to 4-byte alignment (size 56)
 };
 
 //-----------------------------------------------------------------------------
@@ -110,6 +112,33 @@ constexpr uint8_t MAX_RESERVE = 90;
 constexpr double RELOAD_DURATION = 1.9197;             // index 8 (reload_ammo_left)
 constexpr double RELOAD_OUT_OF_AMMO_DURATION = 2.7000; // index 9 (reload_out_of_ammo)
 } // namespace WeaponConfig
+
+//-----------------------------------------------------------------------------
+// Match / scoring constants (shared between client and server)
+//-----------------------------------------------------------------------------
+namespace MatchConfig {
+constexpr uint16_t SCORE_LIMIT    = 10;      // first team to this many kills wins
+constexpr float    MATCH_DURATION = 60.0f;  // seconds (5:00) time limit
+} // namespace MatchConfig
+
+// Snapshot.matchState values. PLAYING == 0 so a zero-initialized snapshot reads
+// as PLAYING (safe default).
+namespace MatchState {
+constexpr uint8_t PLAYING = 0;
+constexpr uint8_t ENDED   = 1;
+} // namespace MatchState
+
+// Snapshot.winningTeam values beyond PlayerTeam::RED/BLUE.
+namespace MatchTeam {
+constexpr uint8_t DRAW = 2;
+constexpr uint8_t NONE = 0xFF; // undecided (while PLAYING)
+} // namespace MatchTeam
+
+// Kill-event ring length carried in every snapshot. Over UNRELIABLE UDP a
+// level-triggered counter can't convey discrete events, so the client replays
+// (lastShownSeq, latestKillSeq] and dedups; entries older than this drop out of
+// the ring (acceptable — already scrolled off the HUD feed).
+static constexpr uint8_t KILL_FEED_SIZE = 8;
 
 //-----------------------------------------------------------------------------
 // Team IDs
@@ -142,6 +171,17 @@ constexpr uint32_t MAX_REWIND_TICKS = 16;
 } // namespace LagCompConfig
 
 //-----------------------------------------------------------------------------
+// KillFeedEntry - One discrete kill event in the Snapshot's kill-feed ring
+//-----------------------------------------------------------------------------
+struct KillFeedEntry {
+  uint8_t killerId;    // playerId of the killer
+  uint8_t victimId;    // playerId of the victim
+  uint8_t killerTeam;  // PlayerTeam::RED or BLUE
+  uint8_t victimTeam;  // PlayerTeam::RED or BLUE
+};
+static_assert(sizeof(KillFeedEntry) == 4, "KillFeedEntry must stay 4 bytes");
+
+//-----------------------------------------------------------------------------
 // RemotePlayerEntry - Identifies a remote player's state in a Snapshot
 //-----------------------------------------------------------------------------
 struct RemotePlayerEntry {
@@ -165,7 +205,14 @@ struct Snapshot {
   uint8_t localPlayerId;                            // Your player ID
   uint8_t remotePlayerCount;                        // Number of valid entries in remotePlayers[]
   uint8_t localPlayerTeam;                          // Your team (PlayerTeam::RED or BLUE)
-  uint8_t padding_snap[1];                          // Alignment
+  uint8_t matchState;                               // MatchState::PLAYING / ENDED
+  uint16_t redScore;                                // RED team total kills
+  uint16_t blueScore;                               // BLUE team total kills
+  float matchTimeRemaining;                         // Seconds left in match (clamps at 0)
+  uint32_t latestKillSeq;                           // Total kills so far (kill-feed seq)
+  uint8_t winningTeam;                              // PlayerTeam/MatchTeam (NONE while playing)
+  uint8_t padding_snap[3];                          // Alignment
+  KillFeedEntry recentKills[KILL_FEED_SIZE];        // Kill-event ring (newest = seq-1)
   RemotePlayerEntry remotePlayers[MAX_PLAYERS - 1]; // Other players' states
 };
 
@@ -175,11 +222,11 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 32,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 52,
+static_assert(sizeof(NetPlayerState) == 56,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 56,
+static_assert(sizeof(RemotePlayerEntry) == 60,
               "RemotePlayerEntry size changed - update network serialization");
-// Snapshot scales with MAX_PLAYERS; this guards that the 72-byte header layout
+// Snapshot scales with MAX_PLAYERS; this guards that the 124-byte header layout
 // and the RemotePlayerEntry array stay wire-compatible (no padding drift).
-static_assert(sizeof(Snapshot) == 72 + 56 * (MAX_PLAYERS - 1),
+static_assert(sizeof(Snapshot) == 124 + 60 * (MAX_PLAYERS - 1),
               "Snapshot layout changed - update network serialization");
