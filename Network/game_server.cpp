@@ -171,6 +171,10 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
 
     m_Players[playerId] = data;
+
+    // Tell the freshly-connected client which map we're simulating.
+    m_pNetwork->SendMapInfoToPlayer(playerId, m_MapInfo);
+
     SLOG_INFO("Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)",
         playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
         data.state.position.x, data.state.position.y, data.state.position.z);
