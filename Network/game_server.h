@@ -15,6 +15,8 @@
 #include "net_common.h"
 #include "server_collision.h"
 #include "server_raycast.h"
+#include "map_io.h"
+#include "net_packet.h"   // MapInfo
 #include <unordered_map>
 #include <cstddef>
 
@@ -32,7 +34,7 @@ public:
     GameServer();
     ~GameServer();
 
-    void Initialize(ENetServerNetwork* pNetwork);
+    void Initialize(ENetServerNetwork* pNetwork, const char* mapPath = nullptr);
     void Finalize();
 
     //-------------------------------------------------------------------------
@@ -129,6 +131,8 @@ private:
 
     // Collision world for gravity
     std::vector<ServerCollider> m_Colliders;
+
+    MapInfo m_MapInfo{};   // name + collision checksum sent to clients on connect
 
     // Player collision parameters (must match client)
     static constexpr float PLAYER_HEIGHT = 1.6f;
