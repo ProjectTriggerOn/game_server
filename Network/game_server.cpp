@@ -157,18 +157,12 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.fireCounter = 0;
     data.state.kills = 0;
     data.state.deaths = 0;
-    data.lastInput = {};
-    data.reloadTimer = 0.0;
-    data.health = MAX_HEALTH;
-    data.respawnTimer = 0.0;
-    data.fireTimer = 0.0;
-    data.fireCounter = 0;
-    data.kills = 0;
-    data.deaths = 0;
-    data.ammo = WeaponConfig::MAG_SIZE;
-    data.ammoReserve = WeaponConfig::MAX_RESERVE;
     data.state.ammo = WeaponConfig::MAG_SIZE;
     data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
+    data.lastInput = {};
+    data.reloadTimer = 0.0;
+    data.respawnTimer = 0.0;
+    data.fireTimer = 0.0;
 
     m_Players[playerId] = data;
 
@@ -253,14 +247,14 @@ void GameServer::Tick()
                 if (player.respawnTimer <= 0.0)
                 {
                     // Respawn
-                    player.health = MAX_HEALTH;
+                    player.state.health = MAX_HEALTH;
                     player.state.stateFlags &= ~NetStateFlags::IS_DEAD;
                     player.state.stateFlags |= NetStateFlags::IS_GROUNDED;
                     player.state.position = GetSpawnPosition(id, player.teamId);
                     player.state.velocity = { 0.0f, 0.0f, 0.0f };
                     player.respawnTimer = 0.0;
-                    player.ammo = WeaponConfig::MAG_SIZE;
-                    player.ammoReserve = WeaponConfig::MAX_RESERVE;
+                    player.state.ammo = WeaponConfig::MAG_SIZE;
+                    player.state.ammoReserve = WeaponConfig::MAX_RESERVE;
                     // Reset reload state — a player killed mid-reload should wake up clean,
                     // not stuck with phantom IS_RELOADING blocking fire until the old timer expires.
                     player.reloadTimer = 0.0;
@@ -275,14 +269,6 @@ void GameServer::Tick()
                 ProcessFiring(player, id);
             }
         }
-
-        // Sync combat data to state
-        player.state.health = player.health;
-        player.state.fireCounter = player.fireCounter;
-        player.state.ammo = player.ammo;
-        player.state.ammoReserve = player.ammoReserve;
-        player.state.kills = player.kills;
-        player.state.deaths = player.deaths;
     }
 
     // 5. Update tick ID in all player states (and ack of last processed input),
@@ -382,9 +368,9 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
 
     if (cmd.buttons & InputButtons::RELOAD)
     {
-        if (player.reloadTimer <= 0.0 && player.ammo < WeaponConfig::MAG_SIZE && player.ammoReserve > 0)
+        if (player.reloadTimer <= 0.0 && player.state.ammo < WeaponConfig::MAG_SIZE && player.state.ammoReserve > 0)
         {
-            if (player.ammo == 0) {
+            if (player.state.ammo == 0) {
                 player.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
                 flags |= NetStateFlags::IS_RELOAD_EMPTY;
             } else {
@@ -446,10 +432,10 @@ void GameServer::UpdatePlayerReloadTimer(PlayerData& player)
             flags &= ~NetStateFlags::IS_RELOAD_EMPTY;
 
             // Refill magazine from reserve
-            int needed = WeaponConfig::MAG_SIZE - player.ammo;
-            int refill = (player.ammoReserve >= needed) ? needed : player.ammoReserve;
-            player.ammo += static_cast<uint8_t>(refill);
-            player.ammoReserve -= static_cast<uint8_t>(refill);
+            int needed = WeaponConfig::MAG_SIZE - player.state.ammo;
+            int refill = (player.state.ammoReserve >= needed) ? needed : player.state.ammoReserve;
+            player.state.ammo += static_cast<uint8_t>(refill);
+            player.state.ammoReserve -= static_cast<uint8_t>(refill);
         }
     }
     else
@@ -692,10 +678,10 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     if (!shouldFire) return;
 
     // Check ammo
-    if (shooter.ammo == 0)
+    if (shooter.state.ammo == 0)
     {
         // Auto-reload: handles empty-fire after interrupted reload, or held FIRE on empty mag
-        if (shooter.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
+        if (shooter.state.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
             shooter.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
             shooter.state.stateFlags |= NetStateFlags::IS_RELOADING;
             shooter.state.stateFlags |= NetStateFlags::IS_RELOAD_EMPTY;
@@ -704,12 +690,11 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     }
 
     // Consume ammo and increment fire counter
-    shooter.ammo--;
-    shooter.state.ammo = shooter.ammo;
-    shooter.fireCounter++;
+    shooter.state.ammo--;
+    shooter.state.fireCounter++;
 
     // Auto-reload IMMEDIATELY when last bullet just fired
-    if (shooter.ammo == 0 && shooter.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
+    if (shooter.state.ammo == 0 && shooter.state.ammoReserve > 0 && shooter.reloadTimer <= 0.0) {
         shooter.reloadTimer = WeaponConfig::RELOAD_OUT_OF_AMMO_DURATION;
         shooter.state.stateFlags |= NetStateFlags::IS_RELOADING;
         shooter.state.stateFlags |= NetStateFlags::IS_RELOAD_EMPTY;
@@ -772,13 +757,13 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
         if (hitIt != m_Players.end())
         {
             PlayerData& target = hitIt->second;
-            if (target.health > damage)
+            if (target.state.health > damage)
             {
-                target.health -= damage;
+                target.state.health -= damage;
             }
             else
             {
-                target.health = 0;
+                target.state.health = 0;
                 target.state.stateFlags |= NetStateFlags::IS_DEAD;
                 target.respawnTimer = RESPAWN_TIME;
                 target.state.velocity = { 0.0f, 0.0f, 0.0f };
@@ -786,8 +771,8 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
 
                 // --- scoring (friendly fire is off, so killer/victim are
                 //     always on opposing teams) -------------------------------
-                shooter.kills++;
-                target.deaths++;
+                shooter.state.kills++;
+                target.state.deaths++;
                 if (shooter.teamId == PlayerTeam::RED) m_RedScore++;
                 else                                   m_BlueScore++;
 
