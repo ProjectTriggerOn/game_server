@@ -27,14 +27,15 @@ int main(int argc, char* argv[])
     std::signal(SIGINT, SignalHandler);
 
     uint16_t port = 7777;
+    const char* mapPath = "default.map";   // deployed next to the server binary
 
-    // Parse optional port argument: --port=XXXX
+    // Parse optional args: --port=XXXX  --map=path
     for (int i = 1; i < argc; i++)
     {
         if (strncmp(argv[i], "--port=", 7) == 0)
-        {
             port = static_cast<uint16_t>(atoi(argv[i] + 7));
-        }
+        else if (strncmp(argv[i], "--map=", 6) == 0)
+            mapPath = argv[i] + 6;
     }
 
     printf("========================================\n");
@@ -50,7 +51,7 @@ int main(int argc, char* argv[])
 
     // Initialize game server logic
     GameServer server;
-    server.Initialize(&network);
+    server.Initialize(&network, mapPath);
 
     SLOG_INFO("Running. Press Ctrl+C to stop.");
 

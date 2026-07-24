@@ -12,6 +12,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 // Per-shot lag-compensation log (verification aid — flip off once verified;
 // at 600-800 RPM this is ~10-13 lines/s per firing player)
@@ -30,7 +31,7 @@ GameServer::~GameServer()
     Finalize();
 }
 
-void GameServer::Initialize(ENetServerNetwork* pNetwork)
+void GameServer::Initialize(ENetServerNetwork* pNetwork, const char* mapPath)
 {
     m_pNetwork = pNetwork;
     m_Accumulator = 0.0;
@@ -47,18 +48,45 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork)
     m_KillSeq = 0;
     for (auto& e : m_RecentKills) e = {};
 
-    // Register colliders from shared map data (must match client)
+    // Register colliders from the runtime .map (must match the client's file).
     m_Colliders.clear();
-    for (int i = 0; i < MAP_COLLIDER_COUNT; i++)
+    mapio::MapData md;
+    bool loaded = (mapPath != nullptr) && mapio::Read(mapPath, md);
+    if (loaded)
     {
-        const MapColliderDef& def = MAP_COLLIDERS[i];
-        ServerCollider sc;
-        sc.aabb = {
-            { def.minX, def.minY, def.minZ },
-            { def.maxX, def.maxY, def.maxZ }
-        };
-        sc.isGround = def.isGround;
-        m_Colliders.push_back(sc);
+        for (const auto& a : md.colliders)
+        {
+            ServerCollider sc;
+            sc.aabb = { { a.minX, a.minY, a.minZ }, { a.maxX, a.maxY, a.maxZ } };
+            sc.isGround = (a.isGround != 0);
+            m_Colliders.push_back(sc);
+        }
+        std::memcpy(m_MapInfo.name, md.name, sizeof(m_MapInfo.name));
+        m_MapInfo.checksum = mapio::CollisionChecksum(md);
+        SLOG_INFO("Loaded map '%s': %zu colliders, checksum=%08x",
+                  md.name, m_Colliders.size(), m_MapInfo.checksum);
+    }
+    else
+    {
+        // Dev fallback: compiled map. Its checksum will NOT match a client's
+        // default.map (no spawns section) — the handshake will flag this, which
+        // is the correct signal that the server is missing its --map file.
+        SLOG_INFO("WARNING: --map missing/unreadable ('%s'); using compiled MAP_COLLIDERS",
+                  mapPath ? mapPath : "(none)");
+        mapio::MapData fb;
+        for (int i = 0; i < MAP_COLLIDER_COUNT; i++)
+        {
+            const MapColliderDef& def = MAP_COLLIDERS[i];
+            ServerCollider sc;
+            sc.aabb = { { def.minX, def.minY, def.minZ }, { def.maxX, def.maxY, def.maxZ } };
+            sc.isGround = def.isGround;
+            m_Colliders.push_back(sc);
+            fb.colliders.push_back(mapio::MapAABB{ def.minX, def.minY, def.minZ,
+                                                   def.maxX, def.maxY, def.maxZ,
+                                                   (uint8_t)(def.isGround ? 1 : 0), {0,0,0} });
+        }
+        std::strncpy(m_MapInfo.name, "compiled", sizeof(m_MapInfo.name) - 1);
+        m_MapInfo.checksum = mapio::CollisionChecksum(fb);
     }
 }
 
@@ -143,6 +171,10 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
 
     m_Players[playerId] = data;
+
+    // Tell the freshly-connected client which map we're simulating.
+    m_pNetwork->SendMapInfoToPlayer(playerId, m_MapInfo);
+
     SLOG_INFO("Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)",
         playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
         data.state.position.x, data.state.position.y, data.state.position.z);

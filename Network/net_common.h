@@ -165,7 +165,7 @@ constexpr float EPSILON = 1e-8f;
 //-----------------------------------------------------------------------------
 namespace LagCompConfig {
 // Max ticks the server will rewind hitboxes for a shot (anti-cheat bound).
-// 16 ticks = 500ms @ 32Hz — covers 100ms client interp delay + high one-way
+// 16 ticks = 500ms @ 32Hz — covers ~62.5ms client interp delay + high one-way
 // latency. Client-reported viewTick older than this is clamped.
 constexpr uint32_t MAX_REWIND_TICKS = 16;
 } // namespace LagCompConfig

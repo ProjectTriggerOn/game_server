@@ -8,6 +8,7 @@
 //=============================================================================
 
 #include "i_network.h"
+#include "net_packet.h"
 #include <enet/enet.h>
 #include <queue>
 #include <mutex>
@@ -73,6 +74,7 @@ public:
     //-------------------------------------------------------------------------
     bool ReceiveTaggedInput(TaggedInput& out);
     void SendSnapshotToPlayer(uint8_t playerId, const Snapshot& snapshot);
+    void SendMapInfoToPlayer(uint8_t playerId, const MapInfo& info);
     bool PollPlayerEvent(PlayerEvent& out);
     std::vector<uint8_t> GetConnectedPlayerIds() const;
 

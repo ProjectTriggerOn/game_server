@@ -269,6 +269,24 @@ void ENetServerNetwork::SendSnapshotToPlayer(uint8_t playerId, const Snapshot& s
 }
 
 //-----------------------------------------------------------------------------
+// SendMapInfoToPlayer - Send map name + collision checksum (reliable, once)
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::SendMapInfoToPlayer(uint8_t playerId, const MapInfo& info)
+{
+    auto it = m_PlayerIdToPeer.find(playerId);
+    if (it == m_PlayerIdToPeer.end()) return;
+
+    uint8_t buffer[1 + sizeof(MapInfo)];
+    buffer[0] = static_cast<uint8_t>(PacketType::MAP_INFO);
+    std::memcpy(buffer + 1, &info, sizeof(MapInfo));
+
+    ENetPacket* packet = enet_packet_create(buffer, sizeof(buffer), ENET_PACKET_FLAG_RELIABLE);
+    if (!packet) return;
+
+    enet_peer_send(it->second, 1, packet);   // channel 1 (same as snapshots)
+}
+
+//-----------------------------------------------------------------------------
 // SendSnapshot - Broadcast same snapshot to all (INetwork compatibility)
 //-----------------------------------------------------------------------------
 void ENetServerNetwork::SendSnapshot(const Snapshot& snapshot)
