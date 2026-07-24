@@ -12,6 +12,11 @@
 #include <algorithm>
 #include <cmath>
 
+// L2: the packet-size cap gates outbound sends too, so it must leave room for the
+// largest packet the server sends (a Snapshot). Fail the build loudly if not.
+static_assert(NetLimits::MAX_PACKET_BYTES >= 1 + sizeof(Snapshot),
+              "MAX_PACKET_BYTES too small for Snapshot - snapshots would fail to send");
+
 ENetServerNetwork::ENetServerNetwork()
     : m_pServer(nullptr)
     , m_Port(7777)
@@ -50,6 +55,12 @@ void ENetServerNetwork::Initialize()
         enet_deinitialize();
         return;
     }
+
+    // L2: cap the max packet size (ENet default is 32MB). The only inbound packet
+    // is the 33-byte InputCmd; this bounds the fragment-reassembly buffer an
+    // attacker could otherwise force. The cap also gates OUTBOUND sends, so it
+    // must exceed the largest packet we send (a Snapshot) — guarded above.
+    m_pServer->maximumPacketSize = NetLimits::MAX_PACKET_BYTES;
 
     SLOG_INFO("Listening on port %u.", m_Port);
     m_TotalSnapshotsSent = 0;

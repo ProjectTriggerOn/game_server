@@ -7,6 +7,7 @@
 //=============================================================================
 
 #include <cstdint>
+#include <cstddef>
 
 namespace NetLimits
 {
@@ -34,4 +35,16 @@ namespace NetLimits
     // is dropped by the kernel, not counted here (see Phase 2 L3 notes).
     //-------------------------------------------------------------------------
     constexpr int MAX_EVENTS_PER_POLL = 4096;
+
+    //-------------------------------------------------------------------------
+    // L2 - host maximumPacketSize cap (ENet default is 32MB). It applies to
+    // packets SENT OR RECEIVED, so it must be >= the largest packet the server
+    // sends (a Snapshot, 1 + sizeof(Snapshot)) or enet_peer_send would silently
+    // reject snapshots — a static_assert in enet_server_network.cpp guards this.
+    // Kept below the MTU (1392) so nothing legit ever fragments, which bounds the
+    // fragment-reassembly buffer an attacker could otherwise force ENet to
+    // allocate (up to 32MB; see Phase 2 R5). Inbound enforcement lives in ENet's
+    // prebuilt lib, so it is not verifiable from source here.
+    //-------------------------------------------------------------------------
+    constexpr size_t MAX_PACKET_BYTES = 1024;
 }
