@@ -23,4 +23,15 @@ namespace NetLimits
     //-------------------------------------------------------------------------
     constexpr float INPUT_BUCKET_REFILL_PER_TICK = 32.0f;
     constexpr float INPUT_BUCKET_DEPTH           = 64.0f;
+
+    //-------------------------------------------------------------------------
+    // L3 - cap on events processed per PollEvents call (backstop). Bounds the
+    // worst-case time of a single receive drain so no peer can stretch one loop
+    // iteration unbounded; the remainder waits in ENet's/kernel's buffer for the
+    // next call (~1ms later). Well above any legit per-call load (10 players is
+    // ~tens of events/call), so it only bites under a flood. It bounds CPU per
+    // call, NOT the socket buffer — under an extreme flood the undrained excess
+    // is dropped by the kernel, not counted here (see Phase 2 L3 notes).
+    //-------------------------------------------------------------------------
+    constexpr int MAX_EVENTS_PER_POLL = 4096;
 }

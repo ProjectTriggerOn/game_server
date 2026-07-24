@@ -99,6 +99,7 @@ void ENetServerNetwork::PollEvents()
     if (!m_pServer) return;
 
     ENetEvent event;
+    int processed = 0;
     while (enet_host_service(m_pServer, &event, 0) > 0)
     {
         switch (event.type)
@@ -224,6 +225,11 @@ void ENetServerNetwork::PollEvents()
         default:
             break;
         }
+
+        // L3: bound the work of a single drain so one peer can't stretch this
+        // PollEvents call unbounded; the rest waits for the next call (~1ms).
+        if (++processed >= NetLimits::MAX_EVENTS_PER_POLL)
+            break;
     }
 }
 
