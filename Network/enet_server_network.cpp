@@ -12,10 +12,16 @@
 #include <algorithm>
 #include <cmath>
 
+// L2: the packet-size cap gates outbound sends too, so it must leave room for the
+// largest packet the server sends (a Snapshot). Fail the build loudly if not.
+static_assert(NetLimits::MAX_PACKET_BYTES >= 1 + sizeof(Snapshot),
+              "MAX_PACKET_BYTES too small for Snapshot - snapshots would fail to send");
+
 ENetServerNetwork::ENetServerNetwork()
     : m_pServer(nullptr)
     , m_Port(7777)
     , m_TotalSnapshotsSent(0)
+    , m_InputQueueHighWater(0)
 {
 }
 
@@ -50,6 +56,12 @@ void ENetServerNetwork::Initialize()
         return;
     }
 
+    // L2: cap the max packet size (ENet default is 32MB). The only inbound packet
+    // is the 33-byte InputCmd; this bounds the fragment-reassembly buffer an
+    // attacker could otherwise force. The cap also gates OUTBOUND sends, so it
+    // must exceed the largest packet we send (a Snapshot) — guarded above.
+    m_pServer->maximumPacketSize = NetLimits::MAX_PACKET_BYTES;
+
     SLOG_INFO("Listening on port %u.", m_Port);
     m_TotalSnapshotsSent = 0;
 }
@@ -64,6 +76,8 @@ void ENetServerNetwork::Finalize()
     m_ConnectedPeers.clear();
     m_PeerToPlayerId.clear();
     m_PlayerIdToPeer.clear();
+    m_PeerRecvCount.clear();
+    m_PeerBudget.clear();
 
     if (m_pServer)
     {
@@ -96,6 +110,7 @@ void ENetServerNetwork::PollEvents()
     if (!m_pServer) return;
 
     ENetEvent event;
+    int processed = 0;
     while (enet_host_service(m_pServer, &event, 0) > 0)
     {
         switch (event.type)
@@ -127,6 +142,9 @@ void ENetServerNetwork::PollEvents()
 
         case ENET_EVENT_TYPE_DISCONNECT:
         {
+            m_PeerRecvCount.erase(event.peer);   // observability cleanup
+            m_PeerBudget.erase(event.peer);      // L1 bucket cleanup
+
             auto it = m_PeerToPlayerId.find(event.peer);
             if (it != m_PeerToPlayerId.end())
             {
@@ -157,6 +175,23 @@ void ENetServerNetwork::PollEvents()
 
         case ENET_EVENT_TYPE_RECEIVE:
         {
+            // Observability: count every packet from this peer this window
+            // (includes malformed/flood packets, not just valid input).
+            m_PeerRecvCount[event.peer]++;
+
+            // L1: per-peer inbound rate limit. Spend one token per packet; when
+            // the bucket is empty this peer is over budget, so drop BEFORE any
+            // deserialization or queueing — the flood's app-side amplifier. The
+            // bucket refills from the server tick (RefillRecvBudgets).
+            PeerBudget& budget = m_PeerBudget[event.peer];
+            if (budget.tokens < 1.0f)
+            {
+                budget.dropped++;
+                enet_packet_destroy(event.packet);
+                break;
+            }
+            budget.tokens -= 1.0f;
+
             if (event.packet->dataLength >= 1)
             {
                 PacketType type = static_cast<PacketType>(event.packet->data[0]);
@@ -189,6 +224,8 @@ void ENetServerNetwork::PollEvents()
                     {
                         std::lock_guard<std::mutex> lock(m_InputMutex);
                         m_TaggedInputQueue.push({cmd, playerId});
+                        if (m_TaggedInputQueue.size() > m_InputQueueHighWater)
+                            m_InputQueueHighWater = m_TaggedInputQueue.size();
                     }
                 }
             }
@@ -199,6 +236,66 @@ void ENetServerNetwork::PollEvents()
         default:
             break;
         }
+
+        // L3: bound the work of a single drain so one peer can't stretch this
+        // PollEvents call unbounded; the rest waits for the next call (~1ms).
+        if (++processed >= NetLimits::MAX_EVENTS_PER_POLL)
+            break;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// ReportRecvStatsAndReset - Log per-peer received-packet counts and the input-
+// queue high-water for the current report window, then reset them. Diagnostic
+// only: this is how an operator sees a peer sending abnormally (no limiting).
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::ReportRecvStatsAndReset()
+{
+    uint32_t maxCount = 0;
+    uint8_t  maxPlayer = 0xFF;
+    for (const auto& pair : m_PeerRecvCount)
+    {
+        if (pair.second > maxCount)
+        {
+            maxCount = pair.second;
+            auto it = m_PeerToPlayerId.find(pair.first);
+            maxPlayer = (it != m_PeerToPlayerId.end()) ? it->second : 0xFF;
+        }
+    }
+
+    SLOG_INFO("Net: inputQueuePeak=%zu | maxRecv/peer=%u (Player %u)",
+        m_InputQueueHighWater, maxCount, maxPlayer);
+
+    // L1: warn about any peer being throttled. Emitted here (~1s cadence) so the
+    // warning is rate-limited and cannot itself amplify a flood.
+    for (auto& pair : m_PeerBudget)
+    {
+        if (pair.second.dropped > 0)
+        {
+            auto pit = m_PeerToPlayerId.find(pair.first);
+            uint8_t pid = (pit != m_PeerToPlayerId.end()) ? pit->second : 0xFF;
+            SLOG_WARN("Peer throttled: Player %u dropped %u over-budget packets (~1s)",
+                pid, pair.second.dropped);
+            pair.second.dropped = 0;
+        }
+    }
+
+    m_PeerRecvCount.clear();
+    m_InputQueueHighWater = 0;
+}
+
+//-----------------------------------------------------------------------------
+// RefillRecvBudgets - Add one tick's worth of tokens to every peer's inbound
+// bucket (call exactly once per server tick). Capped at the bucket depth so the
+// budget is a sustained rate, not an accumulating credit.
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::RefillRecvBudgets()
+{
+    for (auto& pair : m_PeerBudget)
+    {
+        float t = pair.second.tokens + NetLimits::INPUT_BUCKET_REFILL_PER_TICK;
+        pair.second.tokens = (t > NetLimits::INPUT_BUCKET_DEPTH)
+            ? NetLimits::INPUT_BUCKET_DEPTH : t;
     }
 }
 

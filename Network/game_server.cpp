@@ -216,6 +216,9 @@ void GameServer::Tick()
     // 1. Process player connect/disconnect events
     ProcessPlayerEvents();
 
+    // 1b. Refill per-peer inbound rate-limit budgets for this tick (L1).
+    m_pNetwork->RefillRecvBudgets();
+
     // 2. Update reload timers once per tick (BEFORE input so newly-started reloads
     //    this tick last exactly RELOAD_DURATION rather than RELOAD_DURATION - TICK_DURATION)
     for (auto& [id, player] : m_Players)

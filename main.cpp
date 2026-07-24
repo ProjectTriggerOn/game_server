@@ -58,6 +58,7 @@ int main(int argc, char* argv[])
     // Server main loop
     auto lastTime = std::chrono::high_resolution_clock::now();
     uint32_t lastReportedTick = 0;
+    double maxWorkMs = 0.0;   // longest PollEvents+Update this report window (overrun visibility)
 
     while (g_Running)
     {
@@ -65,21 +66,27 @@ int main(int argc, char* argv[])
         double dt = std::chrono::duration<double>(now - lastTime).count();
         lastTime = now;
 
-        // Poll network events (receive packets, handle connections)
+        // Poll network events (receive packets, handle connections) and run
+        // server tick(s) at 32Hz. Measure this work so a flood-induced overrun
+        // (work exceeding the 31.25ms tick duration) is visible in the status line.
         network.PollEvents();
-
-        // Run server tick(s) at 32Hz
         server.Update(dt);
+        double workMs = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - now).count();
+        if (workMs > maxWorkMs) maxWorkMs = workMs;
 
         // Periodic status report (every ~1 second = every 32 ticks)
         if (server.GetCurrentTick() - lastReportedTick >= 32)
         {
             lastReportedTick = server.GetCurrentTick();
-            SLOG_INFO("Tick: %u | Time: %.1fs | Clients: %zu | Players: %zu",
+            SLOG_INFO("Tick: %u | Time: %.1fs | Clients: %zu | Players: %zu | MaxWork: %.1fms",
                 server.GetCurrentTick(),
                 server.GetServerTime(),
                 network.GetConnectedClientCount(),
-                server.GetPlayerCount());
+                server.GetPlayerCount(),
+                maxWorkMs);
+            network.ReportRecvStatsAndReset();
+            maxWorkMs = 0.0;
         }
 
         // Sleep to avoid burning CPU (~1ms, well under tick duration of 31.25ms)
