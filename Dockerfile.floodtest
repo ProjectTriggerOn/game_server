@@ -1,0 +1,24 @@
+# Flood/load test image (NOT the shipped server image — see Dockerfile for that).
+# Builds the server + the headless flood client and runs the before/after
+# scenario in tools/run_floodtest.sh, entirely over container loopback.
+#
+#   docker build -f Dockerfile.floodtest -t triggeron-floodtest .
+#   docker run --rm triggeron-floodtest              # valid-input flood
+#   docker run --rm -e FLOOD_MODE=junk triggeron-floodtest
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ make util-linux procps && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+# Server (uses the project Makefile) + the test client (same flags as the Makefile).
+RUN make -j"$(nproc)" && \
+    g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include \
+        tools/flood_client.cpp -o floodtest \
+        -LThirdParty/enet/lib -lenet -lpthread && \
+    chmod +x tools/run_floodtest.sh
+
+ENTRYPOINT ["tools/run_floodtest.sh"]
