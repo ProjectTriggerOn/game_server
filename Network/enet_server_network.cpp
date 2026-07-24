@@ -66,6 +66,7 @@ void ENetServerNetwork::Finalize()
     m_PeerToPlayerId.clear();
     m_PlayerIdToPeer.clear();
     m_PeerRecvCount.clear();
+    m_PeerBudget.clear();
 
     if (m_pServer)
     {
@@ -130,6 +131,7 @@ void ENetServerNetwork::PollEvents()
         case ENET_EVENT_TYPE_DISCONNECT:
         {
             m_PeerRecvCount.erase(event.peer);   // observability cleanup
+            m_PeerBudget.erase(event.peer);      // L1 bucket cleanup
 
             auto it = m_PeerToPlayerId.find(event.peer);
             if (it != m_PeerToPlayerId.end())
@@ -164,6 +166,19 @@ void ENetServerNetwork::PollEvents()
             // Observability: count every packet from this peer this window
             // (includes malformed/flood packets, not just valid input).
             m_PeerRecvCount[event.peer]++;
+
+            // L1: per-peer inbound rate limit. Spend one token per packet; when
+            // the bucket is empty this peer is over budget, so drop BEFORE any
+            // deserialization or queueing — the flood's app-side amplifier. The
+            // bucket refills from the server tick (RefillRecvBudgets).
+            PeerBudget& budget = m_PeerBudget[event.peer];
+            if (budget.tokens < 1.0f)
+            {
+                budget.dropped++;
+                enet_packet_destroy(event.packet);
+                break;
+            }
+            budget.tokens -= 1.0f;
 
             if (event.packet->dataLength >= 1)
             {
@@ -234,8 +249,37 @@ void ENetServerNetwork::ReportRecvStatsAndReset()
     SLOG_INFO("Net: inputQueuePeak=%zu | maxRecv/peer=%u (Player %u)",
         m_InputQueueHighWater, maxCount, maxPlayer);
 
+    // L1: warn about any peer being throttled. Emitted here (~1s cadence) so the
+    // warning is rate-limited and cannot itself amplify a flood.
+    for (auto& pair : m_PeerBudget)
+    {
+        if (pair.second.dropped > 0)
+        {
+            auto pit = m_PeerToPlayerId.find(pair.first);
+            uint8_t pid = (pit != m_PeerToPlayerId.end()) ? pit->second : 0xFF;
+            SLOG_WARN("Peer throttled: Player %u dropped %u over-budget packets (~1s)",
+                pid, pair.second.dropped);
+            pair.second.dropped = 0;
+        }
+    }
+
     m_PeerRecvCount.clear();
     m_InputQueueHighWater = 0;
+}
+
+//-----------------------------------------------------------------------------
+// RefillRecvBudgets - Add one tick's worth of tokens to every peer's inbound
+// bucket (call exactly once per server tick). Capped at the bucket depth so the
+// budget is a sustained rate, not an accumulating credit.
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::RefillRecvBudgets()
+{
+    for (auto& pair : m_PeerBudget)
+    {
+        float t = pair.second.tokens + NetLimits::INPUT_BUCKET_REFILL_PER_TICK;
+        pair.second.tokens = (t > NetLimits::INPUT_BUCKET_DEPTH)
+            ? NetLimits::INPUT_BUCKET_DEPTH : t;
+    }
 }
 
 //-----------------------------------------------------------------------------

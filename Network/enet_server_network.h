@@ -9,6 +9,7 @@
 
 #include "i_network.h"
 #include "net_packet.h"
+#include "net_limits.h"
 #include <enet/enet.h>
 #include <queue>
 #include <mutex>
@@ -73,6 +74,9 @@ public:
     // current window, then reset them. Call once per status report (~1s).
     void ReportRecvStatsAndReset();
 
+    // L1: refill every peer's inbound token bucket. Call exactly once per server tick.
+    void RefillRecvBudgets();
+
     //-------------------------------------------------------------------------
     // Multi-player: tagged input, per-peer send, player events
     //-------------------------------------------------------------------------
@@ -111,4 +115,14 @@ private:
     // Single-threaded server, so these need no lock (see PollEvents / main loop).
     std::unordered_map<ENetPeer*, uint32_t> m_PeerRecvCount;
     size_t m_InputQueueHighWater;
+
+    // L1: per-peer inbound token bucket. One token spent per received packet;
+    // when empty the peer is over budget and the packet is dropped before parse.
+    // Refilled from the server tick (RefillRecvBudgets). 'dropped' accumulates
+    // per report window for the throttle warning.
+    struct PeerBudget {
+        float    tokens  = NetLimits::INPUT_BUCKET_DEPTH;  // start full (new peer not throttled)
+        uint32_t dropped = 0;
+    };
+    std::unordered_map<ENetPeer*, PeerBudget> m_PeerBudget;
 };
