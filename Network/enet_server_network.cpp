@@ -16,6 +16,7 @@ ENetServerNetwork::ENetServerNetwork()
     : m_pServer(nullptr)
     , m_Port(7777)
     , m_TotalSnapshotsSent(0)
+    , m_InputQueueHighWater(0)
 {
 }
 
@@ -64,6 +65,7 @@ void ENetServerNetwork::Finalize()
     m_ConnectedPeers.clear();
     m_PeerToPlayerId.clear();
     m_PlayerIdToPeer.clear();
+    m_PeerRecvCount.clear();
 
     if (m_pServer)
     {
@@ -127,6 +129,8 @@ void ENetServerNetwork::PollEvents()
 
         case ENET_EVENT_TYPE_DISCONNECT:
         {
+            m_PeerRecvCount.erase(event.peer);   // observability cleanup
+
             auto it = m_PeerToPlayerId.find(event.peer);
             if (it != m_PeerToPlayerId.end())
             {
@@ -157,6 +161,10 @@ void ENetServerNetwork::PollEvents()
 
         case ENET_EVENT_TYPE_RECEIVE:
         {
+            // Observability: count every packet from this peer this window
+            // (includes malformed/flood packets, not just valid input).
+            m_PeerRecvCount[event.peer]++;
+
             if (event.packet->dataLength >= 1)
             {
                 PacketType type = static_cast<PacketType>(event.packet->data[0]);
@@ -189,6 +197,8 @@ void ENetServerNetwork::PollEvents()
                     {
                         std::lock_guard<std::mutex> lock(m_InputMutex);
                         m_TaggedInputQueue.push({cmd, playerId});
+                        if (m_TaggedInputQueue.size() > m_InputQueueHighWater)
+                            m_InputQueueHighWater = m_TaggedInputQueue.size();
                     }
                 }
             }
@@ -200,6 +210,32 @@ void ENetServerNetwork::PollEvents()
             break;
         }
     }
+}
+
+//-----------------------------------------------------------------------------
+// ReportRecvStatsAndReset - Log per-peer received-packet counts and the input-
+// queue high-water for the current report window, then reset them. Diagnostic
+// only: this is how an operator sees a peer sending abnormally (no limiting).
+//-----------------------------------------------------------------------------
+void ENetServerNetwork::ReportRecvStatsAndReset()
+{
+    uint32_t maxCount = 0;
+    uint8_t  maxPlayer = 0xFF;
+    for (const auto& pair : m_PeerRecvCount)
+    {
+        if (pair.second > maxCount)
+        {
+            maxCount = pair.second;
+            auto it = m_PeerToPlayerId.find(pair.first);
+            maxPlayer = (it != m_PeerToPlayerId.end()) ? it->second : 0xFF;
+        }
+    }
+
+    SLOG_INFO("Net: inputQueuePeak=%zu | maxRecv/peer=%u (Player %u)",
+        m_InputQueueHighWater, maxCount, maxPlayer);
+
+    m_PeerRecvCount.clear();
+    m_InputQueueHighWater = 0;
 }
 
 //-----------------------------------------------------------------------------

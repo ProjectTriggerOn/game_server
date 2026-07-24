@@ -69,6 +69,10 @@ public:
     bool HasConnectedClient() const { return !m_ConnectedPeers.empty(); }
     size_t GetConnectedClientCount() const { return m_ConnectedPeers.size(); }
 
+    // Observability: log per-peer receive counts + input-queue high-water for the
+    // current window, then reset them. Call once per status report (~1s).
+    void ReportRecvStatsAndReset();
+
     //-------------------------------------------------------------------------
     // Multi-player: tagged input, per-peer send, player events
     //-------------------------------------------------------------------------
@@ -101,4 +105,10 @@ private:
 
     // Statistics
     uint32_t m_TotalSnapshotsSent;
+
+    // Observability: per-peer received-packet counts + input-queue high-water for
+    // the current report window (~1s). Diagnostic only — nothing is dropped here.
+    // Single-threaded server, so these need no lock (see PollEvents / main loop).
+    std::unordered_map<ENetPeer*, uint32_t> m_PeerRecvCount;
+    size_t m_InputQueueHighWater;
 };
