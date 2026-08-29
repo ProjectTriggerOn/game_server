@@ -241,11 +241,15 @@ void GameServer::Tick()
     // 5. Process firing and combat for all players. When the match has ENDED
     //    combat freezes (no firing, no respawns) — players hold their final
     //    positions and the world broadcasts the frozen end state.
+    // Clear every player's hit marker once, up front. A hit is written to the
+    // VICTIM's snapshot below (see ProcessFiring), so the clear must run for
+    // all players before any shots resolve — otherwise a later-iterated victim
+    // (unordered_map order) would wipe the write before broadcast.
     for (auto& [id, player] : m_Players)
-    {
-        // Clear hit marker each tick
         player.state.hitByPlayerId = 0xFF;
 
+    for (auto& [id, player] : m_Players)
+    {
         if (m_MatchState == MatchState::PLAYING)
         {
             // Respawn timer
@@ -849,14 +853,16 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
                 shooter.lastShotResult = LastShotResult::HIT_KILL;
             }
 
-            // Record hit for attacker's hit marker
-            shooter.state.hitByPlayerId = hitId;
+            // Mark the VICTIM's snapshot with the attacker's id (hit marker /
+            // damage-flash semantics: 0xFF = no hit, else the attacker id per
+            // net_common.h). The victim reads their own snapshot and flashes.
+            target.state.hitByPlayerId = shooterId;
         }
     }
 
     // Record the shot result for the attacker's own snapshot (hitmarker,
-    // spec §3.2). A tick resolves at most one shot per player; the 0xFF seq
-    // guard still dedups stale snapshots. HIT_PLAYER/HIT_KILL were already
+    // spec §3.2). A tick resolves at most one shot per player; the client
+    // dedups stale snapshots by shot seq. HIT_PLAYER/HIT_KILL were already
     // written in the hit branches above — here we only stamp MISS on a clean
     // whiff, so the kill marker is never clobbered.
     if (!didHit)
