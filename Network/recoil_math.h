@@ -59,21 +59,17 @@ inline float PunchEnvelope(uint16_t burstIdx)
 //   moveFactor: 0 = still, 1 = full run. Movement multiplies the BASE
 //   (HIP ×1.5, ADS ×1.3 per spec §1.1); bloom is added unscaled.
 //-----------------------------------------------------------------------------
+// Single overload, NO default argument and NO 3-arg sibling — a default value
+// plus a same-name prefix overload is ambiguous for a 3-arg call in C++ (the
+// client hit C2668). Both call sites pass moveFactor explicitly.
 inline float RecoilSpreadRadians(uint8_t teamId, bool ads, float bloomDeg,
-                                 float moveFactor = 0.0f)
+                                 float moveFactor)
 {
     const RecoilConfig::WeaponSpec& w = RecoilConfig::SpecForTeam(teamId);
     const float base = (ads ? w.spreadBaseDegAds : w.spreadBaseDegHip) * kDegToRad;
     // ADS moving is punished less than HIP moving (spec §1.1): ×1.3 vs ×1.5.
     const float moveMult = 1.0f + moveFactor * (ads ? 0.3f : 0.5f);
     return base * moveMult + bloomDeg * kDegToRad;
-}
-
-inline float RecoilSpreadRadians(uint8_t teamId, bool ads, float bloomDeg)
-{
-    const RecoilConfig::WeaponSpec& w = RecoilConfig::SpecForTeam(teamId);
-    return (ads ? w.spreadBaseDegAds : w.spreadBaseDegHip) * kDegToRad
-         + bloomDeg * kDegToRad;
 }
 
 //-----------------------------------------------------------------------------
