@@ -269,6 +269,13 @@ void GameServer::Tick()
                     player.state.stateFlags &= ~(NetStateFlags::IS_RELOADING | NetStateFlags::IS_RELOAD_EMPTY);
                     // Reset edge-detection so any held button across death/respawn isn't mis-detected.
                     player.prevButtons = 0;
+                    // Recoil reset (spec §7): shotKick never decays, so a
+                    // fresh life must start from a clean pool — otherwise the
+                    // pre-death accumulation permanently skews the WYSIWYG
+                    // ray direction. same for the lastShot latch.
+                    player.recoil = RecoilMath::RecoilState{};
+                    player.lastShotResult = LastShotResult::MISS;
+                    player.lastShotSeqMod = 0;
                     SLOG_INFO("Player %u respawned", id);
                 }
             }
@@ -815,6 +822,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
             if (target.health > damage)
             {
                 target.health -= damage;
+                shooter.lastShotResult = LastShotResult::HIT_PLAYER;
             }
             else
             {
@@ -847,10 +855,12 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     }
 
     // Record the shot result for the attacker's own snapshot (hitmarker,
-    // spec §3.2). Multi-shot ticks collapse to the LAST shot — at 600-800
-    // RPM vs 32Hz a tick holds ~1-2 shots; the marker tolerates that.
-    shooter.lastShotResult = didHit ? LastShotResult::HIT_PLAYER
-                                    : LastShotResult::MISS;
+    // spec §3.2). A tick resolves at most one shot per player; the 0xFF seq
+    // guard still dedups stale snapshots. HIT_PLAYER/HIT_KILL were already
+    // written in the hit branches above — here we only stamp MISS on a clean
+    // whiff, so the kill marker is never clobbered.
+    if (!didHit)
+        shooter.lastShotResult = LastShotResult::MISS;
     shooter.lastShotSeqMod = static_cast<uint8_t>(shooter.fireCounter & 0xFFu);
 }
 
