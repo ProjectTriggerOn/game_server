@@ -298,7 +298,8 @@ static_assert(sizeof(NetPlayerState) == 68,
               "NetPlayerState size changed - update network serialization");
 static_assert(sizeof(RemotePlayerEntry) == 72,
               "RemotePlayerEntry size changed - update network serialization");
-// Snapshot = 104-byte header (fixed 96 + winningTeam/lsr/lss/pad 4 + ring 32)
+// Snapshot = 136-byte header: 100 (fixed, through latestKillSeq) + 4
+// (winningTeam + lastShotResult/lastShotSeqMod + pad) + 32 (kill ring).
 // + RemotePlayerEntry array. 136 also keeps the 8-byte tail alignment
 // (double serverTime) exact: 136 + 72*9 = 784, divisible by 8.
 static_assert(sizeof(Snapshot) == 136 + 72 * (MAX_PLAYERS - 1),
