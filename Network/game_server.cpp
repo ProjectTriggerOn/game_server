@@ -304,7 +304,7 @@ void GameServer::Tick()
         // client's per-frame accumulate-then-decay order.
         RecoilAdvance(player.recoil, player.teamId, player.fireCounter,
                       /*ads=*/false, /*newlyFired=*/false,
-                      static_cast<float>(TICK_DURATION));
+                      static_cast<float>(TICK_DURATION), m_ServerTime);
         player.state.punchPitch     = player.recoil.punchPitch;
         player.state.punchYaw       = player.recoil.punchYaw;
         player.state.shotKickPitch  = player.recoil.shotKickPitch;
@@ -754,7 +754,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     // decay is Tick()'s job (runs right after, before the snapshot).
     const bool ads = (shooter.state.stateFlags & NetStateFlags::IS_ADS) != 0;
     RecoilAdvance(shooter.recoil, shooter.teamId, shooter.fireCounter,
-                  ads, /*newlyFired=*/true, /*dt=*/0.0f);
+                  ads, /*newlyFired=*/true, /*dt=*/0.0f, m_ServerTime);
 
     // Cast ray from eye position
     Float3 eyePos = {

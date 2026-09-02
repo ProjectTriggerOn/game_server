@@ -176,6 +176,14 @@ constexpr uint8_t HIT_KILL   = 3;
 namespace RecoilConfig {
 constexpr uint16_t PATTERN_LEN = 30;              // one mag; idx = (fireCounter-1) % 30
 
+  // While actively firing (a shot within the last FIRE_SUSPEND_DECAY_S
+  // seconds) punch does NOT decay — it accumulates for the whole burst like
+  // COD; recovery only starts once the trigger is released.
+  constexpr float FIRE_SUSPEND_DECAY_S = 0.25f;
+  // Hard cap on accumulated visual punch (deg) — a full-mag dump must not
+  // point the camera at the sky.
+  constexpr float PUNCH_MAX_DEG = 12.0f;
+
 struct WeaponSpec {
   float punchPitchDeg;      // per-shot punch rise at full envelope (deg)
   float punchYawDeg;        // per-shot yaw sway amplitude (deg), zigzag sign

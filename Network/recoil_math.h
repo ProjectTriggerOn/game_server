@@ -29,6 +29,11 @@ struct RecoilState {
     float shotKickPitch = 0.0f;  // rad — real, accumulates (not decayed)
     float shotKickYaw   = 0.0f;  // rad — real, accumulates (not decayed)
     float bloomDeg      = 0.0f;  // deg — spread growth, decays with punch
+    // Absolute time (s, caller clock) of the most recent shot. -infinity means
+    // never fired → decay always runs. While nowSec is within
+    // FIRE_SUSPEND_DECAY_S of this, punch/bloom do NOT decay (COD burst ramp);
+    // recovery starts only once the trigger has been released that long.
+    double lastFireTime = -1.0e9;
 };
 
 //-----------------------------------------------------------------------------
@@ -94,17 +99,27 @@ inline void RecoilConeOffset(float spreadRad, uint16_t fireCounter,
 
 //-----------------------------------------------------------------------------
 // RecoilAdvance — integrate one recoil step.
-//   newlyFired: a shot resolved on this call → apply per-shot punch/kick/bloom.
-//   Always decays punch & bloom by dt (frame-rate independent; server ticks
-//   and client frames share the same formula).
+//   newlyFired: a shot resolved on this call → apply per-shot punch/kick/bloom
+//     and record rs.lastFireTime = nowSec. Punch pitch is hard-capped at
+//     RecoilConfig::PUNCH_MAX_DEG (yaw is a zigzag alternation — naturally
+//     bounded, not capped).
+//   nowSec: caller's absolute clock (s). Punch & bloom decay runs ONLY when
+//     nowSec - rs.lastFireTime >= RecoilConfig::FIRE_SUSPEND_DECAY_S — i.e.
+//     after the trigger has been released for 0.25s. While a burst is landing
+//     (shots closer together than that) punch does NOT decay, so a whole mag
+//     accumulates like COD; recovery starts once the trigger is released.
+//     A never-fired pool (lastFireTime = -inf) decays unconditionally.
+//   dt: elapsed time since this pool's previous advance (frame-rate
+//     independent; server ticks and client frames share the same formula).
 //   shotKick is intentionally NOT decayed — it is the accumulated real
 //   trajectory component and is broadcast for reconciliation.
 //-----------------------------------------------------------------------------
 inline void RecoilAdvance(RecoilState& rs, uint8_t teamId, uint16_t fireCounter,
-                          bool ads, bool newlyFired, float dt)
+                          bool ads, bool newlyFired, float dt, double nowSec)
 {
     if (newlyFired)
     {
+        rs.lastFireTime = nowSec;
         const uint16_t idx = static_cast<uint16_t>((fireCounter - 1u) % RecoilConfig::PATTERN_LEN);
         const RecoilConfig::WeaponSpec& w = RecoilConfig::SpecForTeam(teamId);
         const float env  = PunchEnvelope(idx);
@@ -114,11 +129,15 @@ inline void RecoilAdvance(RecoilState& rs, uint8_t teamId, uint16_t fireCounter,
         rs.punchYaw      += w.punchYawDeg * kDegToRad * env * adsS * zig;
         rs.shotKickPitch += w.realKickPitchDeg * kDegToRad;
         rs.bloomDeg       = std::fmin(rs.bloomDeg + w.bloomPerShotDeg, w.bloomMaxDeg);
+        rs.punchPitch     = std::fmin(rs.punchPitch, RecoilConfig::PUNCH_MAX_DEG * kDegToRad);
     }
-    const float k = std::exp(-RecoilConfig::SpecForTeam(teamId).decayHz * dt);
-    rs.punchPitch *= k;
-    rs.punchYaw   *= k;
-    rs.bloomDeg   *= k;
+    if (nowSec - rs.lastFireTime >= RecoilConfig::FIRE_SUSPEND_DECAY_S)
+    {
+        const float k = std::exp(-RecoilConfig::SpecForTeam(teamId).decayHz * dt);
+        rs.punchPitch *= k;
+        rs.punchYaw   *= k;
+        rs.bloomDeg   *= k;
+    }
 }
 
 //-----------------------------------------------------------------------------
