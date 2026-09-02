@@ -183,6 +183,10 @@ constexpr uint16_t PATTERN_LEN = 30;              // one mag; idx = (fireCounter
   // Hard cap on accumulated visual punch (deg) — a full-mag dump must not
   // point the camera at the sky.
   constexpr float PUNCH_MAX_DEG = 12.0f;
+  // Total aim-cone half-angle cap (deg) applied AFTER base×moveMult + bloom.
+  // A full-auto dump must spread, but never beyond this — keeps spray
+  // controllable (user ruling 2026-09-02).
+  constexpr float SPREAD_MAX_DEG = 1.8f;
 
 struct WeaponSpec {
   float punchPitchDeg;      // per-shot punch rise at full envelope (deg)

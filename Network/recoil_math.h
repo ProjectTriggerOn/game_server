@@ -74,7 +74,9 @@ inline float RecoilSpreadRadians(uint8_t teamId, bool ads, float bloomDeg,
     const float base = (ads ? w.spreadBaseDegAds : w.spreadBaseDegHip) * kDegToRad;
     // ADS moving is punished less than HIP moving (spec §1.1): ×1.3 vs ×1.5.
     const float moveMult = 1.0f + moveFactor * (ads ? 0.3f : 0.5f);
-    return base * moveMult + bloomDeg * kDegToRad;
+    const float total = base * moveMult + bloomDeg * kDegToRad;
+    const float cap   = RecoilConfig::SPREAD_MAX_DEG * kDegToRad;
+    return total > cap ? cap : total;
 }
 
 //-----------------------------------------------------------------------------
