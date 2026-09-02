@@ -190,26 +190,26 @@ struct WeaponSpec {
 
 // RED: heavy rifle — big punch, 600 RPM (matches RED_RPM/RED_DAMAGE)
 constexpr WeaponSpec RED_SPEC{
-    /*punchPitchDeg    */ 0.55f,
-    /*punchYawDeg      */ 0.30f,
+    /*punchPitchDeg    */ 1.6f,
+    /*punchYawDeg      */ 0.20f,
     /*realKickPitchDeg */ 0.05f,
     /*spreadBaseDegHip */ 1.2f,
     /*spreadBaseDegAds */ 0.2f,
     /*bloomPerShotDeg  */ 0.15f,
     /*bloomMaxDeg      */ 1.5f,
-    /*decayHz          */ 5.0f,
+    /*decayHz          */ 4.0f,
     /*adsPunchScale    */ 0.8f,
 };
 // BLUE: light rifle — smaller punch, 800 RPM (matches BLUE_RPM/BLUE_DAMAGE)
 constexpr WeaponSpec BLUE_SPEC{
-    /*punchPitchDeg    */ 0.35f,
-    /*punchYawDeg      */ 0.20f,
+    /*punchPitchDeg    */ 1.1f,
+    /*punchYawDeg      */ 0.15f,
     /*realKickPitchDeg */ 0.03f,
     /*spreadBaseDegHip */ 1.2f,
     /*spreadBaseDegAds */ 0.2f,
     /*bloomPerShotDeg  */ 0.15f,
     /*bloomMaxDeg      */ 1.5f,
-    /*decayHz          */ 5.0f,
+    /*decayHz          */ 4.0f,
     /*adsPunchScale    */ 0.8f,
 };
 
