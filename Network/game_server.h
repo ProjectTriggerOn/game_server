@@ -17,6 +17,7 @@
 #include "server_raycast.h"
 #include "map_io.h"
 #include "net_packet.h"   // MapInfo
+#include "recoil_math.h"
 #include <unordered_map>
 #include <cstddef>
 
@@ -64,22 +65,36 @@ private:
     // Per-player data
     //-------------------------------------------------------------------------
     struct PlayerData {
+        // Single source of truth for the mutable per-player state on the wire —
+        // health, ammo and score included. Combat writes it directly: any
+        // mirror-into-state pass would leak m_Players' hash order into the
+        // broadcast, because ProcessFiring writes across players (a victim
+        // iterated before its killer would ship IS_DEAD alongside a stale
+        // pre-damage health).
+        // That removes stale broadcasts, not order-dependence. The cross-player
+        // writes remain, and Tick()'s combat loop reads them mid-iteration: the
+        // respawn gate tests an IS_DEAD that a *later*-iterated killer may not
+        // have set yet, so same-tick trades and respawn timing still resolve on
+        // hash order.
         NetPlayerState state;
         InputCmd lastInput{};
         uint32_t prevButtons = 0;  // Previous cmd.buttons for edge detection
         double reloadTimer = 0.0;
+        // Identity, not state — exempt from the rule above. Fixed at connect and
+        // carried *beside* state on the wire, not inside it (see Snapshot::
+        // localPlayerTeam and RemotePlayerEntry::teamId, which sits next to its
+        // NetPlayerState). playerId is the same pattern: it's the m_Players key.
         uint8_t teamId = PlayerTeam::RED;
-        // Combat
-        uint8_t health = 200;
+        // Server-only timers: never broadcast, so they have no state twin.
         double respawnTimer = 0.0;
         double fireTimer = 0.0;
-        uint16_t fireCounter = 0;
-        // Score (mirrored into state.kills/deaths each tick)
-        uint16_t kills = 0;
-        uint16_t deaths = 0;
-        // Ammo
-        uint8_t ammo = WeaponConfig::MAG_SIZE;
-        uint8_t ammoReserve = WeaponConfig::MAX_RESERVE;
+        // Recoil integration state (COD model). Advanced per shot in
+        // ProcessFiring (newlyFired, dt=0) and decayed once per Tick —
+        // broadcast via state.punch*/shotKick (spec §4.3).
+        RecoilMath::RecoilState recoil;
+        // Last shot result for Snapshot.lastShot* (hitmarker, spec §3.2).
+        uint8_t lastShotResult = LastShotResult::MISS;
+        uint8_t lastShotSeqMod = 0;
         // Lag compensation: per-tick position history, written at the end of
         // Tick() — exactly the state BroadcastSnapshots() sends (including
         // respawn teleports). Indexed by tick % POSITION_HISTORY_SIZE.

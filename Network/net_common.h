@@ -93,7 +93,15 @@ struct NetPlayerState {
   uint8_t  ammoReserve;            // Reserve ammo (0-90)
   uint16_t kills;                  // Score: kills by this player
   uint16_t deaths;                 // Score: times this player died
-  uint8_t  pad[2];                 // pad to 4-byte alignment (size 56)
+  uint8_t  pad[2];                 // pad to 4-byte alignment (legacy 56-byte tail)
+  // ---- Recoil (COD model, spec §1.1) — appended after the legacy tail so
+  // every pre-existing wire offset is untouched (fireCounter stays @46,
+  // deaths @52). Visual punch decays to zero; shotKick is the tiny real
+  // trajectory component. Server-side integrated, broadcast here; client
+  // predicts locally and reconciles against these values.
+  float punchPitch;                // visual punch (rad, decays to 0)
+  float punchYaw;                  // visual punch yaw (rad, decays to 0)
+  float shotKickPitch;             // accumulated real kick (rad, tiny)
 };
 
 //-----------------------------------------------------------------------------
@@ -147,6 +155,80 @@ namespace PlayerTeam {
 constexpr uint8_t RED  = 0;
 constexpr uint8_t BLUE = 1;
 } // namespace PlayerTeam
+
+//-----------------------------------------------------------------------------
+// LastShotResult (Snapshot.lastShotResult)
+//-----------------------------------------------------------------------------
+namespace LastShotResult {
+constexpr uint8_t MISS       = 0;
+constexpr uint8_t HIT_WALL   = 1;  // v1: no visual (decals out of scope)
+constexpr uint8_t HIT_PLAYER = 2;
+constexpr uint8_t HIT_KILL   = 3;
+} // namespace LastShotResult
+
+//-----------------------------------------------------------------------------
+// RecoilConfig — COD-model recoil (spec §1.1). MIRRORED in both repos, must
+// stay in sync. fireCounter is the only determinism source: pattern index =
+// (fireCounter-1) % PATTERN_LEN; no RNG. Punch is VISUAL (decays to zero);
+// shotKick is the tiny real trajectory component; bloom (spread growth) is
+// the main trajectory control, not the pattern.
+//-----------------------------------------------------------------------------
+namespace RecoilConfig {
+constexpr uint16_t PATTERN_LEN = 30;              // one mag; idx = (fireCounter-1) % 30
+
+  // While actively firing (a shot within the last FIRE_SUSPEND_DECAY_S
+  // seconds) punch does NOT decay — it accumulates for the whole burst like
+  // COD; recovery only starts once the trigger is released.
+  constexpr float FIRE_SUSPEND_DECAY_S = 0.25f;
+  // Hard cap on accumulated visual punch (deg) — a full-mag dump must not
+  // point the camera at the sky.
+  constexpr float PUNCH_MAX_DEG = 12.0f;
+  // Total aim-cone half-angle cap (deg) applied AFTER base×moveMult + bloom.
+  // A full-auto dump must spread, but never beyond this — keeps spray
+  // controllable (user ruling 2026-09-02).
+  constexpr float SPREAD_MAX_DEG = 1.8f;
+
+struct WeaponSpec {
+  float punchPitchDeg;      // per-shot punch rise at full envelope (deg)
+  float punchYawDeg;        // per-shot yaw sway amplitude (deg), zigzag sign
+  float realKickPitchDeg;   // real (non-decaying) kick per shot (deg)
+  float spreadBaseDegHip;   // starting cone half-angle HIP (deg)
+  float spreadBaseDegAds;   // starting cone half-angle ADS (deg)
+  float bloomPerShotDeg;    // spread growth per shot (deg)
+  float bloomMaxDeg;        // spread growth cap (deg)
+  float decayHz;            // punch/bloom exponential decay rate (1/s)
+  float adsPunchScale;      // punch scale while ADS (0.8 = steadier)
+};
+
+// RED: heavy rifle — big punch, 600 RPM (matches RED_RPM/RED_DAMAGE)
+constexpr WeaponSpec RED_SPEC{
+    /*punchPitchDeg    */ 1.6f,
+    /*punchYawDeg      */ 0.20f,
+    /*realKickPitchDeg */ 0.05f,
+    /*spreadBaseDegHip */ 1.2f,
+    /*spreadBaseDegAds */ 0.2f,
+    /*bloomPerShotDeg  */ 0.15f,
+    /*bloomMaxDeg      */ 1.5f,
+    /*decayHz          */ 4.0f,
+    /*adsPunchScale    */ 0.8f,
+};
+// BLUE: light rifle — smaller punch, 800 RPM (matches BLUE_RPM/BLUE_DAMAGE)
+constexpr WeaponSpec BLUE_SPEC{
+    /*punchPitchDeg    */ 1.1f,
+    /*punchYawDeg      */ 0.15f,
+    /*realKickPitchDeg */ 0.03f,
+    /*spreadBaseDegHip */ 1.2f,
+    /*spreadBaseDegAds */ 0.2f,
+    /*bloomPerShotDeg  */ 0.15f,
+    /*bloomMaxDeg      */ 1.5f,
+    /*decayHz          */ 4.0f,
+    /*adsPunchScale    */ 0.8f,
+};
+
+constexpr const WeaponSpec& SpecForTeam(uint8_t teamId) {
+  return (teamId == PlayerTeam::RED) ? RED_SPEC : BLUE_SPEC;
+}
+} // namespace RecoilConfig
 
 //-----------------------------------------------------------------------------
 // Physics constants (must match exactly between client prediction and server)
@@ -209,9 +291,11 @@ struct Snapshot {
   uint16_t redScore;                                // RED team total kills
   uint16_t blueScore;                               // BLUE team total kills
   float matchTimeRemaining;                         // Seconds left in match (clamps at 0)
-  uint32_t latestKillSeq;                           // Total kills so far (kill-feed seq)
-  uint8_t winningTeam;                              // PlayerTeam/MatchTeam (NONE while playing)
-  uint8_t padding_snap[3];                          // Alignment
+  uint32_t latestKillSeq;                          // Total kills so far (kill-feed seq)
+  uint8_t winningTeam;                             // PlayerTeam/MatchTeam (NONE while playing)
+  uint8_t lastShotResult;                          // NEW: LastShotResult of this player's latest shot
+  uint8_t lastShotSeqMod;                          // NEW: fireCounter & 0xFF when that shot resolved
+  uint8_t padding_snap[1];                         // alignment (was [3]; lsr/lss took 2 bytes)
   KillFeedEntry recentKills[KILL_FEED_SIZE];        // Kill-event ring (newest = seq-1)
   RemotePlayerEntry remotePlayers[MAX_PLAYERS - 1]; // Other players' states
 };
@@ -222,11 +306,13 @@ struct Snapshot {
 //-----------------------------------------------------------------------------
 static_assert(sizeof(InputCmd) == 32,
               "InputCmd size changed - update network serialization");
-static_assert(sizeof(NetPlayerState) == 56,
+static_assert(sizeof(NetPlayerState) == 68,
               "NetPlayerState size changed - update network serialization");
-static_assert(sizeof(RemotePlayerEntry) == 60,
+static_assert(sizeof(RemotePlayerEntry) == 72,
               "RemotePlayerEntry size changed - update network serialization");
-// Snapshot scales with MAX_PLAYERS; this guards that the 124-byte header layout
-// and the RemotePlayerEntry array stay wire-compatible (no padding drift).
-static_assert(sizeof(Snapshot) == 124 + 60 * (MAX_PLAYERS - 1),
+// Snapshot = 136-byte header: 100 (fixed, through latestKillSeq) + 4
+// (winningTeam + lastShotResult/lastShotSeqMod + pad) + 32 (kill ring).
+// + RemotePlayerEntry array. 136 also keeps the 8-byte tail alignment
+// (double serverTime) exact: 136 + 72*9 = 784, divisible by 8.
+static_assert(sizeof(Snapshot) == 136 + 72 * (MAX_PLAYERS - 1),
               "Snapshot layout changed - update network serialization");
