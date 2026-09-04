@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <cstring>
 
+using namespace RecoilMath;  // recoil_math.h helpers (RecoilAdvance, RecoilTotalOffsets, ...)
+
 // Per-shot lag-compensation log (verification aid — flip off once verified;
 // at 600-800 RPM this is ~10-13 lines/s per firing player)
 static constexpr bool LAGCOMP_LOG = true;
@@ -233,11 +235,15 @@ void GameServer::Tick()
     // 5. Process firing and combat for all players. When the match has ENDED
     //    combat freezes (no firing, no respawns) — players hold their final
     //    positions and the world broadcasts the frozen end state.
+    // Clear every player's hit marker once, up front. A hit is written to the
+    // VICTIM's snapshot below (see ProcessFiring), so the clear must run for
+    // all players before any shots resolve — otherwise a later-iterated victim
+    // (unordered_map order) would wipe the write before broadcast.
     for (auto& [id, player] : m_Players)
-    {
-        // Clear hit marker each tick
         player.state.hitByPlayerId = 0xFF;
 
+    for (auto& [id, player] : m_Players)
+    {
         if (m_MatchState == MatchState::PLAYING)
         {
             // Respawn timer
@@ -261,6 +267,13 @@ void GameServer::Tick()
                     player.state.stateFlags &= ~(NetStateFlags::IS_RELOADING | NetStateFlags::IS_RELOAD_EMPTY);
                     // Reset edge-detection so any held button across death/respawn isn't mis-detected.
                     player.prevButtons = 0;
+                    // Recoil reset (spec §7): shotKick never decays, so a
+                    // fresh life must start from a clean pool — otherwise the
+                    // pre-death accumulation permanently skews the WYSIWYG
+                    // ray direction. same for the lastShot latch.
+                    player.recoil = RecoilMath::RecoilState{};
+                    player.lastShotResult = LastShotResult::MISS;
+                    player.lastShotSeqMod = 0;
                     SLOG_INFO("Player %u respawned", id);
                 }
             }
@@ -269,6 +282,20 @@ void GameServer::Tick()
                 ProcessFiring(player, id);
             }
         }
+
+        // Recoil decay + broadcast (spec §4.3): one tick's worth of punch/
+        // bloom recovery with the same exponential factor the client uses
+        // per frame. Runs AFTER ProcessFiring, so a shot fired this tick
+        // gets its punch applied and then one tick of decay — matching the
+        // client's per-frame accumulate-then-decay order.
+        RecoilAdvance(player.recoil, player.teamId, player.state.fireCounter,
+                      /*ads=*/false, /*newlyFired=*/false,
+                      static_cast<float>(TICK_DURATION), m_ServerTime);
+        player.state.punchPitch     = player.recoil.punchPitch;
+        player.state.punchYaw       = player.recoil.punchYaw;
+        player.state.shotKickPitch  = player.recoil.shotKickPitch;
+        // lastShotResult/lastShotSeqMod live on Snapshot (not NetPlayerState);
+        // BroadcastSnapshots() writes them into the per-recipient header.
     }
 
     // 5. Update tick ID in all player states (and ack of last processed input),
@@ -603,6 +630,12 @@ void GameServer::BroadcastSnapshots()
         snapshot.localPlayer = myData.state;
         snapshot.localPlayerId = myId;
         snapshot.localPlayerTeam = myData.teamId;
+        // Recoil shot result (hitmarker, spec §3.2): the RECIPIENT's own latest
+        // shot. NetPlayerState carries no lastShot* (wire layout fixed in Task
+        // 1.1), so only the local shot is signaled — exactly what the
+        // hitmarker needs. Remote players' results are not broadcast.
+        snapshot.lastShotResult = myData.lastShotResult;
+        snapshot.lastShotSeqMod = myData.lastShotSeqMod;
 
         // Global match / scoring state (identical for every player's snapshot)
         snapshot.matchState         = m_MatchState;
@@ -700,14 +733,32 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
         shooter.state.stateFlags |= NetStateFlags::IS_RELOAD_EMPTY;
     }
 
+    // Advance recoil for THIS shot (spec §4.3): punch += envelope·adsScale,
+    // shotKick += tiny real kick, bloom grows. fireCounter was already
+    // incremented, so (fireCounter-1) indexes the shot just taken. dt=0:
+    // decay is Tick()'s job (runs right after, before the snapshot).
+    const bool ads = (shooter.state.stateFlags & NetStateFlags::IS_ADS) != 0;
+    RecoilAdvance(shooter.recoil, shooter.teamId, shooter.state.fireCounter,
+                  ads, /*newlyFired=*/true, /*dt=*/0.0f, m_ServerTime);
+
     // Cast ray from eye position
     Float3 eyePos = {
         shooter.state.position.x,
         shooter.state.position.y + 1.5f, // eye height (match client camera)
         shooter.state.position.z
     };
+    // WYSIWYG (spec §2): bullets follow the punched view — the same punch
+    // the client renders — plus this shot's deterministic bloom-cone offset
+    // (fireCounter is the seed; no RNG on either side).
+    float dPitch = 0.0f, dYaw = 0.0f;
+    RecoilTotalOffsets(shooter.recoil, dPitch, dYaw);
+    const float spread = RecoilSpreadRadians(shooter.teamId, ads,
+                                             shooter.recoil.bloomDeg, 0.0f);
+    float coneDP = 0.0f, coneDY = 0.0f;
+    RecoilConeOffset(spread, shooter.state.fireCounter, coneDP, coneDY);
     Float3 rayDir = ServerRaycast::DirectionFromYawPitch(
-        shooter.state.yaw, shooter.state.pitch);
+        shooter.state.yaw + dYaw + coneDY,
+        shooter.state.pitch + dPitch + coneDP);
 
     // Lag compensation: clamp the client-reported view tick into the allowed
     // rewind window (anti-cheat bound — a hacked client claiming an ancient
@@ -760,6 +811,7 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
             if (target.state.health > damage)
             {
                 target.state.health -= damage;
+                shooter.lastShotResult = LastShotResult::HIT_PLAYER;
             }
             else
             {
@@ -783,12 +835,24 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
                 kf.killerTeam = shooter.teamId;
                 kf.victimTeam = target.teamId;
                 m_KillSeq++;
+                shooter.lastShotResult = LastShotResult::HIT_KILL;
             }
 
-            // Record hit for attacker's hit marker
-            shooter.state.hitByPlayerId = hitId;
+            // Mark the VICTIM's snapshot with the attacker's id (hit marker /
+            // damage-flash semantics: 0xFF = no hit, else the attacker id per
+            // net_common.h). The victim reads their own snapshot and flashes.
+            target.state.hitByPlayerId = shooterId;
         }
     }
+
+    // Record the shot result for the attacker's own snapshot (hitmarker,
+    // spec §3.2). A tick resolves at most one shot per player; the client
+    // dedups stale snapshots by shot seq. HIT_PLAYER/HIT_KILL were already
+    // written in the hit branches above — here we only stamp MISS on a clean
+    // whiff, so the kill marker is never clobbered.
+    if (!didHit)
+        shooter.lastShotResult = LastShotResult::MISS;
+    shooter.lastShotSeqMod = static_cast<uint8_t>(shooter.state.fireCounter & 0xFFu);
 }
 
 //-----------------------------------------------------------------------------

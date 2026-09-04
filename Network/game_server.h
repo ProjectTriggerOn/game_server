@@ -17,6 +17,7 @@
 #include "server_raycast.h"
 #include "map_io.h"
 #include "net_packet.h"   // MapInfo
+#include "recoil_math.h"
 #include <unordered_map>
 #include <cstddef>
 
@@ -87,6 +88,13 @@ private:
         // Server-only timers: never broadcast, so they have no state twin.
         double respawnTimer = 0.0;
         double fireTimer = 0.0;
+        // Recoil integration state (COD model). Advanced per shot in
+        // ProcessFiring (newlyFired, dt=0) and decayed once per Tick —
+        // broadcast via state.punch*/shotKick (spec §4.3).
+        RecoilMath::RecoilState recoil;
+        // Last shot result for Snapshot.lastShot* (hitmarker, spec §3.2).
+        uint8_t lastShotResult = LastShotResult::MISS;
+        uint8_t lastShotSeqMod = 0;
         // Lag compensation: per-tick position history, written at the end of
         // Tick() — exactly the state BroadcastSnapshots() sends (including
         // respawn teleports). Indexed by tick % POSITION_HISTORY_SIZE.
