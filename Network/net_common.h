@@ -14,6 +14,7 @@
 //=============================================================================
 
 #include <cstdint>
+#include <cstddef>
 
 #ifdef _WIN32
 #include <DirectXMath.h>
@@ -127,13 +128,28 @@ constexpr double RELOAD_OUT_OF_AMMO_DURATION = 2.7000; // index 9 (reload_out_of
 namespace MatchConfig {
 constexpr uint16_t SCORE_LIMIT    = 10;      // first team to this many kills wins
 constexpr float    MATCH_DURATION = 60.0f;  // seconds (5:00) time limit
+// Match flow: a match never runs on an empty or solo server. It arms only once
+// MIN_PLAYERS are connected, holds a frozen COUNTDOWN, and only then goes live.
+constexpr size_t   MIN_PLAYERS        = 2;
+constexpr float    COUNTDOWN_DURATION = 3.0f;  // seconds of pre-match freeze
 } // namespace MatchConfig
 
 // Snapshot.matchState values. PLAYING == 0 so a zero-initialized snapshot reads
 // as PLAYING (safe default).
+//
+// Flow: WAITING -> COUNTDOWN -> PLAYING -> ENDED, and back to WAITING from any
+// state the moment the room drops below MatchConfig::MIN_PLAYERS. Only PLAYING
+// is live: WAITING/COUNTDOWN/ENDED freeze both combat and movement server-side.
+// Snapshot.matchTimeRemaining is reused as the phase clock — it counts the
+// COUNTDOWN down from COUNTDOWN_DURATION and sits pinned at MATCH_DURATION
+// while WAITING — so no new wire field is needed; the reader keys off
+// matchState. WAITING/COUNTDOWN were appended after ENDED to keep the two
+// pre-existing values on the wire unchanged.
 namespace MatchState {
-constexpr uint8_t PLAYING = 0;
-constexpr uint8_t ENDED   = 1;
+constexpr uint8_t PLAYING   = 0;
+constexpr uint8_t ENDED     = 1;
+constexpr uint8_t WAITING   = 2;  // too few players; clock frozen, world frozen
+constexpr uint8_t COUNTDOWN = 3;  // enough players; pre-match freeze
 } // namespace MatchState
 
 // Snapshot.winningTeam values beyond PlayerTeam::RED/BLUE.

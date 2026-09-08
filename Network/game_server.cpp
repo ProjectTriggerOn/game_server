@@ -41,12 +41,14 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork, const char* mapPath)
     m_CurrentTick = 0;
     m_Players.clear();
 
-    // Fresh match
-    m_MatchState = MatchState::PLAYING;
+    // Fresh match, but NOT a live one: an empty server sits in WAITING until
+    // MatchConfig::MIN_PLAYERS connect (see UpdateMatchFlow).
     m_RedScore = 0;
     m_BlueScore = 0;
     m_WinningTeam = MatchTeam::NONE;
     m_MatchTimeRemaining = MatchConfig::MATCH_DURATION;
+    m_CountdownRemaining = 0.0;
+    m_MatchState = MatchState::WAITING;
     m_KillSeq = 0;
     for (auto& e : m_RecentKills) e = {};
 
@@ -232,9 +234,10 @@ void GameServer::Tick()
     // 4. Simulate physics for all players
     SimulatePhysics();
 
-    // 5. Process firing and combat for all players. When the match has ENDED
-    //    combat freezes (no firing, no respawns) — players hold their final
-    //    positions and the world broadcasts the frozen end state.
+    // 5. Process firing and combat for all players. Combat runs only while the
+    //    match is live (IsMatchLive): WAITING, COUNTDOWN and ENDED all freeze
+    //    firing and respawns. Movement is frozen alongside it in
+    //    SimulatePhysics, so players really do hold their positions.
     // Clear every player's hit marker once, up front. A hit is written to the
     // VICTIM's snapshot below (see ProcessFiring), so the clear must run for
     // all players before any shots resolve — otherwise a later-iterated victim
@@ -244,7 +247,7 @@ void GameServer::Tick()
 
     for (auto& [id, player] : m_Players)
     {
-        if (m_MatchState == MatchState::PLAYING)
+        if (IsMatchLive())
         {
             // Respawn timer
             if (player.state.stateFlags & NetStateFlags::IS_DEAD)
@@ -316,11 +319,63 @@ void GameServer::Tick()
         h.alive = (player.state.stateFlags & NetStateFlags::IS_DEAD) == 0;
     }
 
-    // 5c. Match clock + win condition: score limit OR time limit, whichever
-    //     fires first. On end, latch the winning team and freeze (see step 5).
-    //     TODO(match): persistent-server rematch/rotation after ENDED.
-    if (m_MatchState == MatchState::PLAYING)
+    // 5c. Match flow: player-count gate, countdown, clock and win condition.
+    UpdateMatchFlow();
+
+    // 6. Broadcast per-player snapshots
+    BroadcastSnapshots();
+}
+
+//-----------------------------------------------------------------------------
+// UpdateMatchFlow - WAITING -> COUNTDOWN -> PLAYING -> ENDED
+//
+// A match never runs on an empty or solo server. Dropping below MIN_PLAYERS
+// rearms from ANY phase, ENDED included: that is what lets a client leave a
+// finished match and reconnect into a fresh one without restarting the process.
+//-----------------------------------------------------------------------------
+void GameServer::UpdateMatchFlow()
+{
+    const bool enoughPlayers = (m_Players.size() >= MatchConfig::MIN_PLAYERS);
+
+    // Room emptied out mid-flow: throw away the partial match and wait again.
+    // WAITING is already the rearmed state, so re-running ResetMatch there
+    // would pointlessly re-teleport whoever is still connected every tick.
+    if (!enoughPlayers && m_MatchState != MatchState::WAITING)
     {
+        SLOG_INFO("Match abandoned (%zu/%zu players) - waiting",
+            m_Players.size(), MatchConfig::MIN_PLAYERS);
+        ResetMatch();
+        return;
+    }
+
+    switch (m_MatchState)
+    {
+    case MatchState::WAITING:
+        if (enoughPlayers)
+        {
+            m_MatchState = MatchState::COUNTDOWN;
+            m_CountdownRemaining = MatchConfig::COUNTDOWN_DURATION;
+            SLOG_INFO("Countdown started (%zu players)", m_Players.size());
+        }
+        break;
+
+    case MatchState::COUNTDOWN:
+        m_CountdownRemaining -= TICK_DURATION;
+        if (m_CountdownRemaining <= 0.0)
+        {
+            // Rearm once more on the way in: the countdown is the last moment
+            // a late joiner can arrive, and everyone must start the live match
+            // from an identical clean state.
+            ResetMatch();
+            m_MatchState = MatchState::PLAYING;
+            SLOG_INFO("Match started (%zu players)", m_Players.size());
+        }
+        break;
+
+    case MatchState::PLAYING:
+    {
+        // Score limit OR time limit, whichever fires first. On end, latch the
+        // winning team and freeze (see Tick step 5 and SimulatePhysics).
         m_MatchTimeRemaining -= TICK_DURATION;
         const bool scoreOut = (m_RedScore >= MatchConfig::SCORE_LIMIT) ||
                               (m_BlueScore >= MatchConfig::SCORE_LIMIT);
@@ -332,13 +387,77 @@ void GameServer::Tick()
             m_WinningTeam = (m_RedScore > m_BlueScore) ? PlayerTeam::RED
                           : (m_BlueScore > m_RedScore) ? PlayerTeam::BLUE
                           : MatchTeam::DRAW;
+            // Drop latched intent flags so nobody freezes mid-fire / mid-ADS /
+            // mid-reload for the whole result screen. ResetMatch does this for
+            // the WAITING path by rebuilding stateFlags outright; ENDED keeps
+            // the final positions, so it has to clear them in place.
+            for (auto& [id, p] : m_Players)
+            {
+                p.state.stateFlags &= ~(NetStateFlags::IS_FIRING |
+                                        NetStateFlags::IS_ADS |
+                                        NetStateFlags::IS_RELOADING |
+                                        NetStateFlags::IS_RELOAD_EMPTY);
+                p.reloadTimer = 0.0;
+            }
             SLOG_INFO("Match ended: RED %u BLUE %u winner=%u",
                 m_RedScore, m_BlueScore, m_WinningTeam);
         }
+        break;
     }
 
-    // 6. Broadcast per-player snapshots
-    BroadcastSnapshots();
+    case MatchState::ENDED:
+    default:
+        // Frozen on the result screen. Clients leave via their own NEXT MATCH
+        // (disconnect + reconnect); the player-count gate above rearms us.
+        break;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// ResetMatch - rearm a fresh match and drop back to WAITING
+//
+// Clears match-wide score/clock/kill-feed AND every connected player's life
+// state, so a rematch cannot inherit health, ammo, K/D or recoil from the
+// previous round. Mirrors OnPlayerConnected's spawn block.
+//-----------------------------------------------------------------------------
+void GameServer::ResetMatch()
+{
+    m_RedScore = 0;
+    m_BlueScore = 0;
+    m_WinningTeam = MatchTeam::NONE;
+    m_MatchTimeRemaining = MatchConfig::MATCH_DURATION;
+    m_CountdownRemaining = 0.0;
+    m_MatchState = MatchState::WAITING;
+    m_KillSeq = 0;
+    for (auto& e : m_RecentKills) e = {};
+
+    for (auto& [id, player] : m_Players)
+    {
+        player.state.position = GetSpawnPosition(id, player.teamId);
+        player.state.velocity = { 0.0f, 0.0f, 0.0f };
+        player.state.stateFlags = NetStateFlags::IS_GROUNDED;
+        player.state.health = MAX_HEALTH;
+        player.state.hitByPlayerId = 0xFF;
+        player.state.fireCounter = 0;
+        player.state.kills = 0;
+        player.state.deaths = 0;
+        player.state.ammo = WeaponConfig::MAG_SIZE;
+        player.state.ammoReserve = WeaponConfig::MAX_RESERVE;
+        player.state.punchPitch = 0.0f;
+        player.state.punchYaw = 0.0f;
+        player.state.shotKickPitch = 0.0f;
+        player.reloadTimer = 0.0;
+        player.respawnTimer = 0.0;
+        player.fireTimer = 0.0;
+        player.prevButtons = 0;
+        player.recoil = RecoilMath::RecoilState{};
+        player.lastShotResult = LastShotResult::MISS;
+        player.lastShotSeqMod = 0;
+        // Deliberately NOT cleared: lastInput (the client keeps aiming through
+        // the freeze, and yaw/pitch still drive the broadcast) and history
+        // (lag-comp entries are keyed by tick and age out on their own; the
+        // teleport guard already refuses to lerp across a respawn jump).
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -370,8 +489,12 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     uint32_t newlyPressed = cmd.buttons & ~prevButtons;  // 0→1 edges
     player.lastInput = cmd;
 
-    // Dead players: only update camera, skip all actions
-    if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+    // Dead players, and EVERYONE while the match is not live (WAITING /
+    // COUNTDOWN / ENDED): only the camera updates, every action is dropped.
+    // Firing is already gated in Tick, but the intent flags are not: without
+    // this a player holding the trigger through the countdown would broadcast
+    // IS_FIRING and play a fire animation on every other client.
+    if ((player.state.stateFlags & NetStateFlags::IS_DEAD) || !IsMatchLive())
     {
         player.state.yaw = cmd.yaw;
         player.state.pitch = cmd.pitch;
@@ -476,19 +599,24 @@ void GameServer::UpdatePlayerReloadTimer(PlayerData& player)
 //-----------------------------------------------------------------------------
 void GameServer::SimulatePhysics()
 {
+    // Outside PLAYING nobody moves: WAITING and COUNTDOWN hold everyone on
+    // their spawn, ENDED holds the final positions. Physics still RUNS while
+    // frozen (gravity + collision) so a player can't hang in the air over a
+    // pending fall; only the input-driven part is suppressed.
+    const bool frozen = !IsMatchLive();
     for (auto& [id, player] : m_Players)
     {
         // Skip dead players
         if (player.state.stateFlags & NetStateFlags::IS_DEAD)
             continue;
-        SimulatePlayerPhysics(player);
+        SimulatePlayerPhysics(player, frozen);
     }
 }
 
 //-----------------------------------------------------------------------------
 // SimulatePlayerPhysics - CS:GO / Valorant style movement for one player
 //-----------------------------------------------------------------------------
-void GameServer::SimulatePlayerPhysics(PlayerData& player)
+void GameServer::SimulatePlayerPhysics(PlayerData& player, bool frozen)
 {
     const float dt = static_cast<float>(TICK_DURATION);
 
@@ -500,7 +628,20 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
     constexpr float JUMP_VELOCITY  = 8.0f;
 
     NetPlayerState& state = player.state;
-    const InputCmd& input = player.lastInput;
+    // A frozen phase drops movement intent but keeps the look angles, which the
+    // client still owns and broadcasts. Substituting a neutered command here
+    // (rather than branching through the body) keeps gravity, collision and the
+    // grounded/jumping flag transitions on exactly one code path.
+    InputCmd frozenInput{};
+    if (frozen)
+    {
+        frozenInput.tickId = player.lastInput.tickId;
+        frozenInput.yaw = player.lastInput.yaw;
+        frozenInput.pitch = player.lastInput.pitch;
+        state.velocity.x = 0.0f;
+        state.velocity.z = 0.0f;
+    }
+    const InputCmd& input = frozen ? frozenInput : player.lastInput;
 
     bool isGrounded = (state.stateFlags & NetStateFlags::IS_GROUNDED) != 0;
     bool wasGroundedAtStart = isGrounded;
@@ -642,7 +783,11 @@ void GameServer::BroadcastSnapshots()
         snapshot.winningTeam        = m_WinningTeam;
         snapshot.redScore           = m_RedScore;
         snapshot.blueScore          = m_BlueScore;
-        snapshot.matchTimeRemaining = static_cast<float>(m_MatchTimeRemaining);
+        // COUNTDOWN reuses this field as its own 3..0 clock (see MatchState in
+        // net_common.h); the client keys off matchState to read it correctly.
+        snapshot.matchTimeRemaining = static_cast<float>(
+            (m_MatchState == MatchState::COUNTDOWN) ? m_CountdownRemaining
+                                                    : m_MatchTimeRemaining);
         snapshot.latestKillSeq      = m_KillSeq;
         for (int k = 0; k < KILL_FEED_SIZE; ++k)
             snapshot.recentKills[k] = m_RecentKills[k];
