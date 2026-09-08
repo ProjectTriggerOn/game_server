@@ -114,9 +114,18 @@ private:
     Float3 GetRewoundPosition(const PlayerData& target,
                               uint32_t viewTick, float viewFrac) const;
     float RaycastWorld(const Float3& origin, const Float3& dir);
-    void SimulatePlayerPhysics(PlayerData& player);
+    void SimulatePlayerPhysics(PlayerData& player, bool frozen);
     void SimulatePhysics();
     void BroadcastSnapshots();
+
+    // Match flow (WAITING -> COUNTDOWN -> PLAYING -> ENDED). Runs once per
+    // tick, after simulation and before the broadcast.
+    void UpdateMatchFlow();
+    // Rearm a fresh match: scores, clock, kill feed and every connected
+    // player's life state back to their connect-time values, then WAITING.
+    void ResetMatch();
+    // Only PLAYING is live. Every other phase freezes combat AND movement.
+    bool IsMatchLive() const { return m_MatchState == MatchState::PLAYING; }
 
     void OnPlayerConnected(uint8_t playerId);
     void OnPlayerDisconnected(uint8_t playerId);
@@ -136,11 +145,14 @@ private:
     std::unordered_map<uint8_t, PlayerData> m_Players;
 
     // Match / scoring state (broadcast in every Snapshot header)
-    uint8_t  m_MatchState = MatchState::PLAYING;
+    uint8_t  m_MatchState = MatchState::WAITING;
     uint16_t m_RedScore = 0;
     uint16_t m_BlueScore = 0;
     uint8_t  m_WinningTeam = MatchTeam::NONE;
     double   m_MatchTimeRemaining = MatchConfig::MATCH_DURATION;
+    // COUNTDOWN phase clock. Broadcast through Snapshot::matchTimeRemaining
+    // (see MatchState) rather than a wire field of its own.
+    double   m_CountdownRemaining = 0.0;
     uint32_t m_KillSeq = 0;  // total kills; also wire latestKillSeq
     KillFeedEntry m_RecentKills[KILL_FEED_SIZE] = {};
 
