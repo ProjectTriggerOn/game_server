@@ -492,8 +492,11 @@ void GameServer::SimulatePlayerPhysics(PlayerData& player)
 {
     const float dt = static_cast<float>(TICK_DURATION);
 
-    constexpr float MAX_WALK_SPEED = 5.0f;
-    constexpr float MAX_RUN_SPEED  = 8.0f;
+    // From PhysicsConfig (net_common.h) — shared with the client's prediction
+    // and the mock, and the divisor for the recoil spread's movement term, so
+    // a local copy here could desync the cone.
+    constexpr float MAX_WALK_SPEED = PhysicsConfig::MAX_WALK_SPEED;
+    constexpr float MAX_RUN_SPEED  = PhysicsConfig::MAX_RUN_SPEED;
     constexpr float GROUND_ACCEL   = 50.0f;
     constexpr float AIR_ACCEL      = 2.0f;
     constexpr float GRAVITY        = 20.0f;
@@ -752,8 +755,13 @@ void GameServer::ProcessFiring(PlayerData& shooter, uint8_t shooterId)
     // (fireCounter is the seed; no RNG on either side).
     float dPitch = 0.0f, dYaw = 0.0f;
     RecoilTotalOffsets(shooter.recoil, dPitch, dYaw);
+    // Movement widens the cone (spec §1.1: HIP ×1.5, ADS ×1.3). Derived from
+    // the authoritative velocity, which is also what the client's crosshair
+    // reads back from the snapshot — both sides land on the same cone.
+    const float moveFactor = MoveFactorFromVelocity(shooter.state.velocity.x,
+                                                    shooter.state.velocity.z);
     const float spread = RecoilSpreadRadians(shooter.teamId, ads,
-                                             shooter.recoil.bloomDeg, 0.0f);
+                                             shooter.recoil.bloomDeg, moveFactor);
     float coneDP = 0.0f, coneDY = 0.0f;
     RecoilConeOffset(spread, shooter.state.fireCounter, coneDP, coneDY);
     Float3 rayDir = ServerRaycast::DirectionFromYawPitch(
