@@ -67,8 +67,9 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork, const char* mapPath)
         }
         std::memcpy(m_MapInfo.name, md.name, sizeof(m_MapInfo.name));
         m_MapInfo.checksum = mapio::CollisionChecksum(md);
-        SLOG_INFO("Loaded map '%s': %zu colliders, checksum=%08x",
-                  md.name, m_Colliders.size(), m_MapInfo.checksum);
+        m_MapSpawns.assign(md.spawns.begin(), md.spawns.end());
+        SLOG_INFO("Loaded map '%s': %zu colliders, %zu spawns, checksum=%08x",
+                  md.name, m_Colliders.size(), m_MapSpawns.size(), m_MapInfo.checksum);
     }
     else
     {
@@ -91,6 +92,7 @@ void GameServer::Initialize(ENetServerNetwork* pNetwork, const char* mapPath)
         }
         std::strncpy(m_MapInfo.name, "compiled", sizeof(m_MapInfo.name) - 1);
         m_MapInfo.checksum = mapio::CollisionChecksum(fb);
+        m_MapSpawns.clear();
     }
 }
 
@@ -121,15 +123,53 @@ uint8_t GameServer::AssignTeam() const
 }
 
 //-----------------------------------------------------------------------------
-// Spawn position — team-based strips on opposite sides of the map.
+// Spawn position — map-authored spawn points when available, else the
+// compiled-in team strips.
 //
-// RED  spawns on the -Z side strip:  X in [-9, 9], Z in [-9, -6]
-// BLUE spawns on the +Z side strip:  X in [-9, 9], Z in [ 6,  9]
-// Both strips clear the four central blocks (which occupy Z in [-5,-2] and
-// [2,5]; see map_colliders.h) and are wide enough to spread 5 players.
+// With a loaded .map: pick a random spawn of the requesting team, preferring
+// the point farthest from any live enemy (cheap anti-spawnkill heuristic that
+// also spreads teammates across the authored points). No map spawns (compiled
+// fallback): RED strips -Z, BLUE strips +Z as before — those match default.map's
+// north/south layout.
 //-----------------------------------------------------------------------------
-Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t teamId)
+GameServer::SpawnPoint GameServer::GetSpawnPoint(uint8_t /*playerId*/, uint8_t teamId)
 {
+    const uint8_t wantTeam = (teamId == PlayerTeam::RED) ? mapio::TEAM_RED : mapio::TEAM_BLUE;
+
+    // Collect this team's authored spawn indices.
+    std::vector<size_t> candidates;
+    for (size_t i = 0; i < m_MapSpawns.size(); i++)
+        if (m_MapSpawns[i].team == wantTeam)
+            candidates.push_back(i);
+
+    if (!candidates.empty())
+    {
+        // Score each candidate by min distance to a live enemy; take the best
+        // with a little randomness among near-ties so spawns don't telegraph.
+        size_t best = candidates[0];
+        float bestScore = -1.0f;
+        for (size_t idx : candidates)
+        {
+            const mapio::MapSpawn& s = m_MapSpawns[idx];
+            float minEnemyDistSq = 1e9f;
+            for (const auto& [pid, p] : m_Players)
+            {
+                if (p.teamId == teamId) continue;
+                if (p.state.stateFlags & NetStateFlags::IS_DEAD) continue;
+                const float dx = p.state.position.x - s.x;
+                const float dz = p.state.position.z - s.z;
+                minEnemyDistSq = std::fmin(minEnemyDistSq, dx * dx + dz * dz);
+            }
+            if (minEnemyDistSq > 1e8f) minEnemyDistSq = 400.0f;   // no live enemies: cap at 20m so candidates tie
+            const float score = minEnemyDistSq +
+                (static_cast<float>(rand()) / RAND_MAX) * 9.0f;   // tie-break jitter (3m)
+            if (score > bestScore) { bestScore = score; best = idx; }
+        }
+        const mapio::MapSpawn& s = m_MapSpawns[best];
+        return { { s.x, s.y, s.z }, s.yaw };
+    }
+
+    // Compiled-in fallback strips (default.map north/south layout).
     const float minX = -9.0f, maxX = 9.0f;
     float minZ, maxZ;
     if (teamId == PlayerTeam::RED) { minZ = -9.0f; maxZ = -6.0f; }
@@ -137,7 +177,10 @@ Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t teamId)
 
     float x = minX + static_cast<float>(rand()) / RAND_MAX * (maxX - minX);
     float z = minZ + static_cast<float>(rand()) / RAND_MAX * (maxZ - minZ);
-    return { x, 0.0f, z };
+    // Yaw 0 looks down +Z, so RED (spawning at -Z) already faces the middle
+    // and BLUE has to turn about.
+    const float yaw = (teamId == PlayerTeam::RED) ? 0.0f : 3.14159265f;
+    return { { x, 0.0f, z }, yaw };
 }
 
 //-----------------------------------------------------------------------------
@@ -171,9 +214,10 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
     data.teamId = team;
     data.state.tickId = m_CurrentTick;
     data.state.lastProcessedInputTick = 0;
-    data.state.position = GetSpawnPosition(playerId, team);
+    const SpawnPoint spawn = GetSpawnPoint(playerId, team);
+    data.state.position = spawn.position;
     data.state.velocity = { 0.0f, 0.0f, 0.0f };
-    data.state.yaw = 0.0f;
+    data.state.yaw = spawn.yaw;
     data.state.pitch = 0.0f;
     data.state.stateFlags = NetStateFlags::IS_GROUNDED;
     data.state.health = MAX_HEALTH;
@@ -279,7 +323,9 @@ void GameServer::Tick()
                     player.state.health = MAX_HEALTH;
                     player.state.stateFlags &= ~NetStateFlags::IS_DEAD;
                     player.state.stateFlags |= NetStateFlags::IS_GROUNDED;
-                    player.state.position = GetSpawnPosition(id, player.teamId);
+                    const SpawnPoint spawn = GetSpawnPoint(id, player.teamId);
+                    player.state.position = spawn.position;
+                    player.state.yaw = spawn.yaw;
                     player.state.velocity = { 0.0f, 0.0f, 0.0f };
                     player.respawnTimer = 0.0;
                     player.state.ammo = WeaponConfig::MAG_SIZE;
@@ -453,7 +499,9 @@ void GameServer::ResetMatch()
 
     for (auto& [id, player] : m_Players)
     {
-        player.state.position = GetSpawnPosition(id, player.teamId);
+        const SpawnPoint spawn = GetSpawnPoint(id, player.teamId);
+        player.state.position = spawn.position;
+        player.state.yaw = spawn.yaw;
         player.state.velocity = { 0.0f, 0.0f, 0.0f };
         player.state.stateFlags = NetStateFlags::IS_GROUNDED;
         player.state.health = MAX_HEALTH;
