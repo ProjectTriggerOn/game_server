@@ -145,6 +145,26 @@ Float3 GameServer::GetSpawnPosition(uint8_t /*playerId*/, uint8_t teamId)
 //-----------------------------------------------------------------------------
 void GameServer::OnPlayerConnected(uint8_t playerId)
 {
+    // Joining a FINISHED match is a rematch request.
+    //
+    // Normally the room has already emptied by now - a client leaves the moment
+    // its match ends, so the result screen costs no slot - and the player-count
+    // gate in UpdateMatchFlow has rearmed us. This covers the cases where it has
+    // not: a client that leaves and rejoins within a single tick (
+    // ProcessPlayerEvents drains the WHOLE event queue before the flow runs, so
+    // the count never dips and the joiner would land straight back on the
+    // result screen it just left - observed live), and any peer still frozen in
+    // ENDED because it went away without saying so and its timeout has not
+    // fired yet.
+    //
+    // Runs before the new player is inserted, so their state below is already
+    // the fresh one and ResetMatch does not have to touch them.
+    if (m_MatchState == MatchState::ENDED)
+    {
+        SLOG_INFO("Player %u joined a finished match - rearming", playerId);
+        ResetMatch();
+    }
+
     uint8_t team = AssignTeam();
 
     PlayerData data;
