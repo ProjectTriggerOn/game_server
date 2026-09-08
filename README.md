@@ -35,6 +35,8 @@ Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on
 ```bash
 make
 ./game_server --port=7777 --map=default.map
+# or the Shipment map (client: set [network].map = "shipment" in config.toml):
+./game_server --port=7777 --map=shipment.map
 ```
 
 ## Docker
@@ -47,7 +49,7 @@ docker build -t triggeron-server .
 docker run -p 7777:7777/udp triggeron-server
 ```
 
-The image ships `default.map` at `/app/default.map` and runs with `/app` as its working directory, so the default `--map=default.map` resolves. To simulate a different map, mount it over that path:
+The image ships `default.map` and `shipment.map` at `/app/` and runs with `/app` as its working directory, so the default `--map=default.map` resolves. To run the Shipment map, pass `--map=shipment.map`. To simulate any other map, mount it over one of the shipped names:
 
 ```bash
 docker run -p 7777:7777/udp -v ./my.map:/app/default.map triggeron-server
