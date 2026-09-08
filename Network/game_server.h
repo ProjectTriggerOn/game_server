@@ -19,6 +19,7 @@
 #include "net_packet.h"   // MapInfo
 #include "recoil_math.h"
 #include <unordered_map>
+#include <vector>
 #include <cstddef>
 
 class ENetServerNetwork;
@@ -122,7 +123,12 @@ private:
     void OnPlayerDisconnected(uint8_t playerId);
 
     uint8_t AssignTeam() const;
-    static Float3 GetSpawnPosition(uint8_t playerId, uint8_t teamId);
+
+    // A spawn is a position AND a facing. Returning only the position left
+    // every player looking down +Z regardless of which point they got, which
+    // on a small map means spawning face-first into a container.
+    struct SpawnPoint { Float3 position; float yaw; };
+    SpawnPoint GetSpawnPoint(uint8_t playerId, uint8_t teamId);
 
 private:
     ENetServerNetwork* m_pNetwork;
@@ -148,6 +154,11 @@ private:
     std::vector<ServerCollider> m_Colliders;
 
     MapInfo m_MapInfo{};   // name + collision checksum sent to clients on connect
+
+    // Team spawn points read from the runtime .map (empty when the map didn't
+    // load or authored no spawns — GetSpawnPoint falls back to the
+    // compiled-in strips). MapSpawn is POD; stored by value.
+    std::vector<mapio::MapSpawn> m_MapSpawns;
 
     // Player collision parameters (must match client)
     static constexpr float PLAYER_HEIGHT = 1.6f;
