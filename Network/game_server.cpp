@@ -298,10 +298,11 @@ void GameServer::Tick()
     // 4. Simulate physics for all players
     SimulatePhysics();
 
-    // 5. Process firing and combat for all players. Combat runs only while the
-    //    match is live (IsMatchLive): WAITING, COUNTDOWN and ENDED all freeze
-    //    firing and respawns. Movement is frozen alongside it in
-    //    SimulatePhysics, so players really do hold their positions.
+    // 5. Process firing and combat for all players. Two gates, not one:
+    //    respawn timers follow the MATCH (IsMatchLive, PLAYING only) while
+    //    firing follows the WORLD (IsWorldFrozen, COUNTDOWN + ENDED only), so
+    //    WAITING is a warm-up you can shoot in. Movement is frozen on the same
+    //    world gate in SimulatePhysics, so the two stay consistent.
     // Clear every player's hit marker once, up front. A hit is written to the
     // VICTIM's snapshot below (see ProcessFiring), so the clear must run for
     // all players before any shots resolve — otherwise a later-iterated victim
@@ -311,10 +312,13 @@ void GameServer::Tick()
 
     for (auto& [id, player] : m_Players)
     {
-        if (IsMatchLive())
+        const bool dead = (player.state.stateFlags & NetStateFlags::IS_DEAD) != 0;
+
+        // Respawn timers belong to the MATCH, so a body stays down through the
+        // result screen and the next countdown rather than popping back up.
+        if (dead)
         {
-            // Respawn timer
-            if (player.state.stateFlags & NetStateFlags::IS_DEAD)
+            if (IsMatchLive())
             {
                 player.respawnTimer -= TICK_DURATION;
                 if (player.respawnTimer <= 0.0)
@@ -346,10 +350,16 @@ void GameServer::Tick()
                     SLOG_INFO("Player %u respawned", id);
                 }
             }
-            else
-            {
-                ProcessFiring(player, id);
-            }
+        }
+        // Firing follows the WORLD freeze instead. WAITING is a warm-up: it is
+        // only reachable with fewer than MIN_PLAYERS on the field, so a shot
+        // reaches nobody and moves no score, and ResetMatch refills the
+        // magazine on the way into COUNTDOWN. COUNTDOWN and ENDED drop the
+        // trigger — the intent flags are already suppressed in
+        // ProcessPlayerInput, this is the second half of the same gate.
+        else if (!IsWorldFrozen())
+        {
+            ProcessFiring(player, id);
         }
 
         // Recoil decay + broadcast (spec §4.3): one tick's worth of punch/
@@ -419,6 +429,13 @@ void GameServer::UpdateMatchFlow()
     case MatchState::WAITING:
         if (enoughPlayers)
         {
+            // Rearm on the way IN, not just on the way out: the warm-up let
+            // everyone wander, and the countdown is meant to be spent standing
+            // on your spawn. Without this the freeze would pin players
+            // wherever they happened to be and then teleport them at the
+            // instant the match goes live — a visible jump on the first frame
+            // of play. ResetMatch lands on WAITING, so set the phase after it.
+            ResetMatch();
             m_MatchState = MatchState::COUNTDOWN;
             m_CountdownRemaining = MatchConfig::COUNTDOWN_DURATION;
             SLOG_INFO("Countdown started (%zu players)", m_Players.size());
@@ -557,12 +574,15 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     uint32_t newlyPressed = cmd.buttons & ~prevButtons;  // 0→1 edges
     player.lastInput = cmd;
 
-    // Dead players, and EVERYONE while the match is not live (WAITING /
-    // COUNTDOWN / ENDED): only the camera updates, every action is dropped.
+    // Dead players, and EVERYONE while the world is frozen (COUNTDOWN /
+    // ENDED): only the camera updates, every action is dropped. This is what
+    // makes the countdown "you can look but not shoot" — the look angles are
+    // the client's to own, everything else waits.
     // Firing is already gated in Tick, but the intent flags are not: without
     // this a player holding the trigger through the countdown would broadcast
     // IS_FIRING and play a fire animation on every other client.
-    if ((player.state.stateFlags & NetStateFlags::IS_DEAD) || !IsMatchLive())
+    // WAITING deliberately falls through to the live path: it is a warm-up.
+    if ((player.state.stateFlags & NetStateFlags::IS_DEAD) || IsWorldFrozen())
     {
         player.state.yaw = cmd.yaw;
         player.state.pitch = cmd.pitch;
@@ -667,11 +687,13 @@ void GameServer::UpdatePlayerReloadTimer(PlayerData& player)
 //-----------------------------------------------------------------------------
 void GameServer::SimulatePhysics()
 {
-    // Outside PLAYING nobody moves: WAITING and COUNTDOWN hold everyone on
-    // their spawn, ENDED holds the final positions. Physics still RUNS while
-    // frozen (gravity + collision) so a player can't hang in the air over a
-    // pending fall; only the input-driven part is suppressed.
-    const bool frozen = !IsMatchLive();
+    // COUNTDOWN holds everyone on the spawn they were just rearmed to and
+    // ENDED holds the final positions. WAITING does NOT freeze — it is a
+    // warm-up, and a player waiting alone for someone to join should be able
+    // to walk the map. Physics still RUNS while frozen (gravity + collision)
+    // so a player can't hang in the air over a pending fall; only the
+    // input-driven part is suppressed.
+    const bool frozen = IsWorldFrozen();
     for (auto& [id, player] : m_Players)
     {
         // Skip dead players
