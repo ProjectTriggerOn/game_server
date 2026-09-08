@@ -27,7 +27,11 @@ int main(int argc, char* argv[])
     std::signal(SIGINT, SignalHandler);
 
     uint16_t port = 7777;
-    const char* mapPath = "default.map";   // deployed next to the server binary
+    // Shipment is the shipping map, so it is what a bare `game_server` serves.
+    // The image carries default.map too (--map=default.map) — it is the small
+    // engine-test box, not something a player should land in by accident.
+    // Deployed next to the server binary; see the Dockerfile.
+    const char* mapPath = "shipment.map";
 
     // Parse optional args: --port=XXXX  --map=path
     for (int i = 1; i < argc; i++)

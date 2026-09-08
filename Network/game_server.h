@@ -125,8 +125,17 @@ private:
     // Rearm a fresh match: scores, clock, kill feed and every connected
     // player's life state back to their connect-time values, then WAITING.
     void ResetMatch();
-    // Only PLAYING is live. Every other phase freezes combat AND movement.
+    // The match is live only in PLAYING: score, clock, respawn timers and the
+    // win check all key off this.
     bool IsMatchLive() const { return m_MatchState == MatchState::PLAYING; }
+    // The WORLD freezes in a narrower set of phases than the match: COUNTDOWN
+    // pins everyone at their spawn and ENDED holds the final positions, but
+    // WAITING is a warm-up where movement and firing run normally. Keeping the
+    // two apart is what lets a lone player walk around while the clock, the
+    // score and the respawn timers stay parked. Look angles survive either
+    // way — the client owns them (see SimulatePlayerPhysics's frozenInput).
+    bool IsWorldFrozen() const { return m_MatchState == MatchState::COUNTDOWN ||
+                                       m_MatchState == MatchState::ENDED; }
 
     void OnPlayerConnected(uint8_t playerId);
     void OnPlayerDisconnected(uint8_t playerId);

@@ -131,15 +131,23 @@ constexpr float    MATCH_DURATION = 60.0f;  // seconds (5:00) time limit
 // Match flow: a match never runs on an empty or solo server. It arms only once
 // MIN_PLAYERS are connected, holds a frozen COUNTDOWN, and only then goes live.
 constexpr size_t   MIN_PLAYERS        = 2;
-constexpr float    COUNTDOWN_DURATION = 3.0f;  // seconds of pre-match freeze
+constexpr float    COUNTDOWN_DURATION = 5.0f;  // seconds of pre-match freeze
 } // namespace MatchConfig
 
 // Snapshot.matchState values. PLAYING == 0 so a zero-initialized snapshot reads
 // as PLAYING (safe default).
 //
 // Flow: WAITING -> COUNTDOWN -> PLAYING -> ENDED, and back to WAITING from any
-// state the moment the room drops below MatchConfig::MIN_PLAYERS. Only PLAYING
-// is live: WAITING/COUNTDOWN/ENDED freeze both combat and movement server-side.
+// state the moment the room drops below MatchConfig::MIN_PLAYERS.
+//
+// There are two different freezes and they do NOT line up:
+//   - the MATCH (score, clock, respawn timers, win check) runs only in PLAYING
+//   - the WORLD (movement, firing) is frozen only in COUNTDOWN and ENDED
+// WAITING is therefore a warm-up: you walk and shoot freely. It is only
+// reachable with fewer than MIN_PLAYERS on the field, so there is nobody to
+// hit and no score to move, and entering COUNTDOWN rearms everyone back to
+// their spawn — nothing done during the warm-up carries into the match.
+//
 // Snapshot.matchTimeRemaining is reused as the phase clock — it counts the
 // COUNTDOWN down from COUNTDOWN_DURATION and sits pinned at MATCH_DURATION
 // while WAITING — so no new wire field is needed; the reader keys off
@@ -148,8 +156,8 @@ constexpr float    COUNTDOWN_DURATION = 3.0f;  // seconds of pre-match freeze
 namespace MatchState {
 constexpr uint8_t PLAYING   = 0;
 constexpr uint8_t ENDED     = 1;
-constexpr uint8_t WAITING   = 2;  // too few players; clock frozen, world frozen
-constexpr uint8_t COUNTDOWN = 3;  // enough players; pre-match freeze
+constexpr uint8_t WAITING   = 2;  // too few players; warm-up, clock frozen
+constexpr uint8_t COUNTDOWN = 3;  // enough players; pre-match freeze at spawn
 } // namespace MatchState
 
 // Snapshot.winningTeam values beyond PlayerTeam::RED/BLUE.
