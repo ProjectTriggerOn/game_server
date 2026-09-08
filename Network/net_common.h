@@ -187,6 +187,12 @@ constexpr uint16_t PATTERN_LEN = 30;              // one mag; idx = (fireCounter
   // A full-auto dump must spread, but never beyond this — keeps spray
   // controllable (user ruling 2026-09-02).
   constexpr float SPREAD_MAX_DEG = 1.8f;
+  // Hard cap on accumulated REAL kick (deg). shotKick never decays and resets
+  // only on death, so without a bound it grows for the whole life (RED
+  // 0.05°/shot → 10° after 200 rounds). The player compensates for it by
+  // aiming lower, which is the intent — but it must not run away. 3° is
+  // 60 RED rounds (two magazines) before it pins.
+  constexpr float SHOTKICK_MAX_DEG = 3.0f;
 
 struct WeaponSpec {
   float punchPitchDeg;      // per-shot punch rise at full envelope (deg)
@@ -234,6 +240,12 @@ constexpr const WeaponSpec& SpecForTeam(uint8_t teamId) {
 // Physics constants (must match exactly between client prediction and server)
 //-----------------------------------------------------------------------------
 namespace PhysicsConfig {
+// Ground movement speeds (m/s). These were duplicated as function-local
+// constexpr in three movement paths (client prediction, mock, server); they
+// are physics constants the two sides MUST agree on, and the recoil spread's
+// movement term now divides by MAX_RUN_SPEED, so they live here.
+constexpr float MAX_WALK_SPEED = 5.0f;
+constexpr float MAX_RUN_SPEED = 8.0f;
 // Air strafe speed allowed slightly above ground max to enable bunny-hop momentum.
 constexpr float AIR_STRAFE_SPEED_MULT = 1.2f;
 // Minimum upward component of collision normal (ny) for a surface to count as ground.

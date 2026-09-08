@@ -14,7 +14,7 @@ Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on
 - **Team-based combat** — RED vs BLUE with asymmetric weapon stats
 - **Up to 10 players** concurrent (5v5: RED 5 + BLUE 5)
 - **Lag compensation** — 64 ticks (2 s) of per-player position history; a hit ray is resolved against the world as the shooter saw it (`InputCmd.viewTick` + sub-tick fraction)
-- **COD-model recoil** — visual punch, real kick, and bloom (spread growth) are advanced server-side and ride the snapshot. The pattern is derived from `fireCounter` alone (no RNG), so client and server independently compute the same trajectory; `recoil_math.h` is mirrored in the client and must stay in sync.
+- **COD-model recoil** — visual punch, real kick, and bloom (spread growth) are advanced server-side and ride the snapshot. The pattern is derived from `fireCounter` alone (no RNG), so client and server independently compute the same trajectory — exactly for the hash, the pattern index and every arithmetic term, and to within 1 ULP of the platform `libm` (measured 4.7e-10 rad) for the in-cone offset, whose `std::cos` differs between MSVC's CRT and glibc. `recoil_math.h` is mirrored in the client and must stay in sync. Movement widens the cone (HIP ×1.5, ADS ×1.3) from `NetPlayerState::velocity`, the reconciled quantity both sides read, and the permanent kick is bounded by `SHOTKICK_MAX_DEG`.
 - **Match flow** — team kill scoring (first to 10), a 60 s time limit, an 8-entry kill-feed ring carried in every snapshot, and an end-of-match state with the winning team
 - **Map loading** — reads the `.map` binary format shared with the client (`--map=`, falling back to the compiled-in geometry), and sends `MAP_INFO` on connect so a client that loaded a different map is caught by collision checksum
 - **Inbound flood mitigation** — per-peer token bucket, an events-per-poll cap, and a host packet-size cap, with per-second receive / queue / tick-time reporting (thresholds in `Network/net_limits.h`)
@@ -119,7 +119,7 @@ Key components:
 - `GameServer` — Per-player state (`unordered_map<uint8_t, PlayerData>`), physics tick, combat resolution, lag compensation, match/score state
 - `server_collision.h` — Header-only pure-math collision library (no DirectXMath)
 - `server_raycast.h` — Weapon hit detection via raycasting
-- `recoil_math.h` — Pure recoil math, mirrored byte-for-byte in the client
+- `recoil_math.h` — Pure recoil math, mirrored in the client (identical apart from the header's `MIRRORED:` line)
 
 ## Load Testing
 
