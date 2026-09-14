@@ -52,6 +52,17 @@ int main(int argc, char* argv[])
     ENetServerNetwork network;
     network.SetPort(port);
     network.Initialize();
+    if (!network.IsListening())
+    {
+        // Nothing below this point can do anything useful without a socket, and
+        // a server that keeps ticking anyway is worse than one that dies: the
+        // console fills with reassuring "Running." / "Clients: 0" lines and the
+        // single ERROR scrolls away, so the operator debugs the client while
+        // the real problem is that something else holds the port.
+        SLOG_ERROR("Cannot serve on UDP port %u - already in use? "
+                   "(stale container, a second game_server, or another service)", port);
+        return 1;
+    }
 
     // Initialize game server logic
     GameServer server;

@@ -15,7 +15,7 @@ Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on
 - **Up to 10 players** concurrent (5v5: RED 5 + BLUE 5)
 - **Lag compensation** — 64 ticks (2 s) of per-player position history; a hit ray is resolved against the world as the shooter saw it (`InputCmd.viewTick` + sub-tick fraction)
 - **COD-model recoil** — visual punch, real kick, and bloom (spread growth) are advanced server-side and ride the snapshot. The pattern is derived from `fireCounter` alone (no RNG), so client and server independently compute the same trajectory — exactly for the hash, the pattern index and every arithmetic term, and to within 1 ULP of the platform `libm` (measured 4.7e-10 rad) for the in-cone offset, whose `std::cos` differs between MSVC's CRT and glibc. `recoil_math.h` is mirrored in the client and must stay in sync. Movement widens the cone (HIP ×1.5, ADS ×1.3) from `NetPlayerState::velocity`, the reconciled quantity both sides read, and the permanent kick is bounded by `SHOTKICK_MAX_DEG`.
-- **Match flow** — team kill scoring (first to 10), a 60 s time limit, an 8-entry kill-feed ring carried in every snapshot, and an end-of-match state with the winning team
+- **Match flow** — waits for two joined players, runs a 5 s countdown, then a live round: team kill scoring (first to 10), a 60 s time limit, an 8-entry kill-feed ring carried in every snapshot, and an end-of-match state with the winning team
 - **Map loading** — reads the `.map` binary format shared with the client (`--map=`, falling back to the compiled-in geometry), and sends `MAP_INFO` on connect so a client that loaded a different map is caught by collision checksum
 - **Inbound flood mitigation** — per-peer token bucket, an events-per-poll cap, and a host packet-size cap, with per-second receive / queue / tick-time reporting (thresholds in `Network/net_limits.h`)
 - **Docker-ready** with multi-stage build
@@ -34,9 +34,9 @@ Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on
 
 ```bash
 make
+./game_server --port=7777 --map=shipment.map   # the default; client: [network].map = "shipment"
+# or the small engine-test box:
 ./game_server --port=7777 --map=default.map
-# or the Shipment map (client: set [network].map = "shipment" in config.toml):
-./game_server --port=7777 --map=shipment.map
 ```
 
 ## Docker
@@ -49,10 +49,10 @@ docker build -t triggeron-server .
 docker run -p 7777:7777/udp triggeron-server
 ```
 
-The image ships `default.map` and `shipment.map` at `/app/` and runs with `/app` as its working directory, so the default `--map=default.map` resolves. To run the Shipment map, pass `--map=shipment.map`. To simulate any other map, mount it over one of the shipped names:
+The image ships `default.map` and `shipment.map` at `/app/` and runs with `/app` as its working directory, so the default `--map=shipment.map` resolves. To run the small engine-test box instead, pass `--map=default.map`. To simulate any other map, mount it over one of the shipped names:
 
 ```bash
-docker run -p 7777:7777/udp -v ./my.map:/app/default.map triggeron-server
+docker run -p 7777:7777/udp -v ./my.map:/app/shipment.map triggeron-server
 ```
 
 ### Docker Compose
@@ -78,7 +78,7 @@ docker compose up -d
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--port=XXXX` | 7777 | UDP port to listen on |
-| `--map=PATH` | `default.map` | `.map` file to simulate, resolved relative to the working directory. If it cannot be read, the server falls back to the compiled-in map (`map_colliders.h`) — whose checksum will not match any client, so the map check will warn. |
+| `--map=PATH` | `shipment.map` | `.map` file to simulate, resolved relative to the working directory. If it cannot be read, the server falls back to the compiled-in map (`map_colliders.h`) — whose checksum will not match any client, so the map check will warn. |
 
 ## Server Parameters
 
@@ -94,9 +94,15 @@ docker compose up -d
 
 | Parameter | Value |
 |-----------|-------|
+| Minimum players to start | 2 (`MatchConfig::MIN_PLAYERS`) — joined players, not connected peers |
+| Pre-match countdown | 5 s |
 | Score limit | 10 kills |
 | Match duration | 60 s |
 | Kill-feed ring | 8 entries per snapshot |
+
+Phases: `WAITING` (warm-up — walk and shoot, nothing scores) → `COUNTDOWN`
+(frozen on spawn) → `PLAYING` → `ENDED`. Dropping below the minimum rearms from
+any phase.
 
 ### Inbound limits (`Network/net_limits.h`)
 
@@ -111,8 +117,18 @@ docker compose up -d
 The server follows a **server-authoritative** model:
 
 - **Client → Server**: `InputCmd` (32 bytes) — player intent only (movement axes, yaw/pitch, button bitfield, viewed tick for lag compensation)
+- **Client → Server**: `JOIN_REQUEST` (1 byte) — "put me in the match"
 - **Server → Client**: `Snapshot` (784 bytes at 10 players) — authoritative world state (positions, velocities, health, flags, recoil, ammo, score, kill feed)
 - **Server → Client**: `MapInfo` (68 bytes) — map name + collision checksum, sent once per connect
+
+A **connection is not a player**. A client opens its ENet peer when its process
+starts and holds it until the process exits — most of that time it is on a menu.
+So a fresh peer is a spectator: it is sent `MAP_INFO` (enough to verify it loaded
+the same world) and nothing else. It is not spawned, receives no snapshots, and
+carries no weight against `MatchConfig::MIN_PLAYERS` until it sends
+`JOIN_REQUEST`. Without that split, clients idling on the title screen reached
+the player-count gate on their own and ran a match to its 60-second end on an
+empty map.
 
 The server never trusts client positions. All movement, collision, and combat are simulated server-side from input commands.
 
@@ -122,6 +138,21 @@ Key components:
 - `server_collision.h` — Header-only pure-math collision library (no DirectXMath)
 - `server_raycast.h` — Weapon hit detection via raycasting
 - `recoil_math.h` — Pure recoil math, mirrored in the client (identical apart from the header's `MIRRORED:` line)
+
+## Testing
+
+`tools/run_sessiontest.sh` is the server-lifecycle conformance suite. It checks
+that a server which cannot take its port exits non-zero instead of ticking
+silently with no socket, and that the connect/join split holds: a peer that has
+not sent `JOIN_REQUEST` gets no spawn and no snapshots, a peer that has becomes a
+player, idle peers cannot reach `MIN_PLAYERS`, and two real joins still start a
+match.
+
+```bash
+make
+g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include tools/session_test.cpp     -o session_test -LThirdParty/enet/lib -lenet -lpthread
+tools/run_sessiontest.sh          # exits non-zero on any failure
+```
 
 ## Load Testing
 
@@ -139,7 +170,7 @@ g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include tools/flood_client.cpp \
 ```
 main.cpp                        Entry point, signal handling, main loop, status line
 server_log.h                    Timestamped stdout logger
-default.map                     Map shipped beside the binary (Docker: /app/default.map)
+default.map / shipment.map      Maps shipped beside the binary (Docker: /app/)
 Network/
 ├── game_server.h/cpp           Core game logic, physics, combat, lag compensation, match state
 ├── enet_server_network.h/cpp   ENet UDP server implementation, inbound rate limiting
@@ -153,7 +184,10 @@ Network/
 ├── server_collision.h          Collision math (server-only)
 └── server_raycast.h            Raycast hit detection (server-only)
 tools/
-└── flood_client.cpp            Headless load/flood test client (not shipped)
+├── flood_client.cpp            Headless load/flood test client (not shipped)
+├── session_test.cpp            Headless connect/join conformance client (not shipped)
+├── run_sessiontest.sh          Server-lifecycle conformance suite
+└── run_floodtest.sh            Flood before/after scenario
 ThirdParty/
 └── enet/                       ENet networking library (built from source)
 .github/workflows/              Docker image build & publish (main, dev)
