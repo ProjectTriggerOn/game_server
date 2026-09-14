@@ -78,6 +78,7 @@ void ENetServerNetwork::Finalize()
     m_PlayerIdToPeer.clear();
     m_PeerRecvCount.clear();
     m_PeerBudget.clear();
+    m_JoinedPeers.clear();
 
     if (m_pServer)
     {
@@ -129,13 +130,15 @@ void ENetServerNetwork::PollEvents()
             m_PeerToPlayerId[event.peer] = playerId;
             m_PlayerIdToPeer[playerId] = event.peer;
 
-            // Queue player connect event
+            // Transport only. The peer is a spectator until it sends
+            // JOIN_REQUEST - GameServer answers this event with MAP_INFO and
+            // nothing else.
             {
                 std::lock_guard<std::mutex> lock(m_EventMutex);
-                m_PlayerEventQueue.push({playerId, true});
+                m_PlayerEventQueue.push({playerId, PlayerEventType::CONNECTED});
             }
 
-            SLOG_INFO("Client connected as Player %u from %x:%u. Total clients: %zu",
+            SLOG_INFO("Client connected as Player %u from %x:%u (not joined). Total clients: %zu",
                 playerId, event.peer->address.host, event.peer->address.port, m_ConnectedPeers.size());
             break;
         }
@@ -144,6 +147,7 @@ void ENetServerNetwork::PollEvents()
         {
             m_PeerRecvCount.erase(event.peer);   // observability cleanup
             m_PeerBudget.erase(event.peer);      // L1 bucket cleanup
+            m_JoinedPeers.erase(event.peer);     // join gate cleanup
 
             auto it = m_PeerToPlayerId.find(event.peer);
             if (it != m_PeerToPlayerId.end())
@@ -152,10 +156,11 @@ void ENetServerNetwork::PollEvents()
                 m_PlayerIdToPeer.erase(playerId);
                 m_PeerToPlayerId.erase(it);
 
-                // Queue player disconnect event
+                // Queued whether or not the peer ever joined; GameServer's
+                // handler erases from m_Players, which a spectator was never in.
                 {
                     std::lock_guard<std::mutex> lock(m_EventMutex);
-                    m_PlayerEventQueue.push({playerId, false});
+                    m_PlayerEventQueue.push({playerId, PlayerEventType::DISCONNECTED});
                 }
 
                 m_ConnectedPeers.erase(
@@ -226,6 +231,22 @@ void ENetServerNetwork::PollEvents()
                         m_TaggedInputQueue.push({cmd, playerId});
                         if (m_TaggedInputQueue.size() > m_InputQueueHighWater)
                             m_InputQueueHighWater = m_TaggedInputQueue.size();
+                    }
+                }
+                else if (type == PacketType::JOIN_REQUEST &&
+                         event.packet->dataLength == 1)
+                {
+                    // The player is leaving their title screen. Only now do they
+                    // enter the world and start counting toward MIN_PLAYERS.
+                    // m_JoinedPeers makes this once-per-connection: a repeated
+                    // packet (retransmit, or a client with a stuck send) must
+                    // not respawn a live player or re-trigger the ENDED rearm.
+                    auto it = m_PeerToPlayerId.find(event.peer);
+                    if (it != m_PeerToPlayerId.end() &&
+                        m_JoinedPeers.insert(event.peer).second)
+                    {
+                        std::lock_guard<std::mutex> lock(m_EventMutex);
+                        m_PlayerEventQueue.push({it->second, PlayerEventType::JOINED});
                     }
                 }
             }
@@ -313,7 +334,7 @@ bool ENetServerNetwork::ReceiveTaggedInput(TaggedInput& out)
 }
 
 //-----------------------------------------------------------------------------
-// PollPlayerEvent - Pop connect/disconnect events
+// PollPlayerEvent - Pop connect/join/disconnect events (see PlayerEventType)
 //-----------------------------------------------------------------------------
 bool ENetServerNetwork::PollPlayerEvent(PlayerEvent& out)
 {

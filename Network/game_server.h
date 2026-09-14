@@ -137,7 +137,13 @@ private:
     bool IsWorldFrozen() const { return m_MatchState == MatchState::COUNTDOWN ||
                                        m_MatchState == MatchState::ENDED; }
 
-    void OnPlayerConnected(uint8_t playerId);
+    // A peer arrived. It is a spectator: it gets MAP_INFO so it can check it
+    // loaded the same world, and nothing else. It is not in m_Players, gets no
+    // snapshots, and does not count toward MatchConfig::MIN_PLAYERS.
+    void OnPeerConnected(uint8_t playerId);
+    // ...and the player behind it asked to come in (PacketType::JOIN_REQUEST).
+    // THIS is where they are spawned and start counting.
+    void OnPlayerJoined(uint8_t playerId);
     void OnPlayerDisconnected(uint8_t playerId);
 
     uint8_t AssignTeam() const;

@@ -15,6 +15,7 @@
 #include <mutex>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 //-----------------------------------------------------------------------------
 // Tagged input: InputCmd associated with the player who sent it
@@ -25,11 +26,25 @@ struct TaggedInput {
 };
 
 //-----------------------------------------------------------------------------
-// Player connect/disconnect event
+// What happened to a peer.
+//
+// CONNECTED and JOINED are deliberately separate. A client opens its ENet peer
+// once when the process starts and holds it until the process exits; that says
+// nothing about whether a person is playing. JOINED is the player themselves
+// arriving (PacketType::JOIN_REQUEST), and it is the only one that puts them in
+// the world. Collapsing the two is what let two clients idling on the title
+// screen reach MatchConfig::MIN_PLAYERS and run a match to its end with an
+// empty map.
 //-----------------------------------------------------------------------------
+enum class PlayerEventType : uint8_t {
+    CONNECTED,      // transport peer established - a spectator, not a player
+    JOINED,         // asked to enter the match room
+    DISCONNECTED,   // peer gone (whether or not it ever joined)
+};
+
 struct PlayerEvent {
     uint8_t playerId;
-    bool connected;
+    PlayerEventType type;
 };
 
 class ENetServerNetwork : public INetwork
@@ -67,6 +82,15 @@ public:
     // ENet-specific
     //-------------------------------------------------------------------------
     void PollEvents();
+
+    // Did Initialize() actually take the port? INetwork::Initialize is void and
+    // shared with the client, so the one failure that matters is reported here
+    // instead: without this check a server whose bind lost to a stale container
+    // or a second launch ran its whole loop at 32Hz with no socket, printing
+    // "Running." and "Clients: 0" forever. It looked healthy from the console
+    // and from a supervisor (exit 0) while being unreachable.
+    bool IsListening() const { return m_pServer != nullptr; }
+
     bool HasConnectedClient() const { return !m_ConnectedPeers.empty(); }
     size_t GetConnectedClientCount() const { return m_ConnectedPeers.size(); }
 
@@ -95,9 +119,16 @@ private:
 
     uint16_t m_Port;
 
-    // Peer <-> PlayerId mapping
+    // Peer <-> PlayerId mapping. A playerId is reserved on CONNECT so the peer
+    // has a stable name in the logs and can be sent MAP_INFO; being in here is
+    // NOT the same as being in the match (see m_JoinedPeers).
     std::unordered_map<ENetPeer*, uint8_t> m_PeerToPlayerId;
     std::unordered_map<uint8_t, ENetPeer*> m_PlayerIdToPeer;
+
+    // Peers that have sent JOIN_REQUEST. Gates the join at the source so a peer
+    // repeating the packet produces exactly one JOINED event per connection;
+    // GameServer::OnPlayerJoined guards the same thing against m_Players.
+    std::unordered_set<ENetPeer*> m_JoinedPeers;
 
     // Incoming tagged input queue (filled by PollEvents, consumed by ReceiveTaggedInput)
     std::queue<TaggedInput> m_TaggedInputQueue;

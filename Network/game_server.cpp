@@ -184,10 +184,31 @@ GameServer::SpawnPoint GameServer::GetSpawnPoint(uint8_t /*playerId*/, uint8_t t
 }
 
 //-----------------------------------------------------------------------------
-// Player connect/disconnect handlers
+// Player connect/join/disconnect handlers
 //-----------------------------------------------------------------------------
-void GameServer::OnPlayerConnected(uint8_t playerId)
+
+// A transport peer opened. The client does this once when its process starts,
+// which may be a long time before anyone plays - it sits on the title screen
+// with the peer open. So all this does is tell it which world we are
+// simulating, which is exactly what it needs to decide whether it CAN join
+// (checksum mismatch: the client drops itself, and does so without ever having
+// occupied a slot in the room).
+void GameServer::OnPeerConnected(uint8_t playerId)
 {
+    m_pNetwork->SendMapInfoToPlayer(playerId, m_MapInfo);
+}
+
+void GameServer::OnPlayerJoined(uint8_t playerId)
+{
+    // Defense in depth: ENetServerNetwork only emits one JOINED per peer per
+    // connection, so this should never fire. If it ever does, re-running the
+    // block below would teleport a live player back to spawn with full health.
+    if (m_Players.find(playerId) != m_Players.end())
+    {
+        SLOG_WARN("Player %u already in the match - ignoring duplicate join", playerId);
+        return;
+    }
+
     // Joining a FINISHED match is a rematch request.
     //
     // Normally the room has already emptied by now - a client leaves the moment
@@ -234,18 +255,21 @@ void GameServer::OnPlayerConnected(uint8_t playerId)
 
     m_Players[playerId] = data;
 
-    // Tell the freshly-connected client which map we're simulating.
-    m_pNetwork->SendMapInfoToPlayer(playerId, m_MapInfo);
-
-    SLOG_INFO("Player %u (Team %s) spawned at (%.1f, %.1f, %.1f)",
+    // MAP_INFO already went out on connect (OnPeerConnected) - by the time a
+    // client asks to join it has long since verified the checksum.
+    SLOG_INFO("Player %u joined (Team %s) - spawned at (%.1f, %.1f, %.1f). Players: %zu",
         playerId, (team == PlayerTeam::RED) ? "RED" : "BLUE",
-        data.state.position.x, data.state.position.y, data.state.position.z);
+        data.state.position.x, data.state.position.y, data.state.position.z,
+        m_Players.size());
 }
 
 void GameServer::OnPlayerDisconnected(uint8_t playerId)
 {
-    m_Players.erase(playerId);
-    SLOG_INFO("Player %u removed", playerId);
+    // erase() on a spectator that never joined is a no-op, which is the whole
+    // point: a peer that came and went without playing leaves no trace on the
+    // match.
+    if (m_Players.erase(playerId) > 0)
+        SLOG_INFO("Player %u left the match. Players: %zu", playerId, m_Players.size());
 }
 
 //-----------------------------------------------------------------------------
@@ -501,7 +525,7 @@ void GameServer::UpdateMatchFlow()
 //
 // Clears match-wide score/clock/kill-feed AND every connected player's life
 // state, so a rematch cannot inherit health, ammo, K/D or recoil from the
-// previous round. Mirrors OnPlayerConnected's spawn block.
+// previous round. Mirrors OnPlayerJoined's spawn block.
 //-----------------------------------------------------------------------------
 void GameServer::ResetMatch()
 {
@@ -553,10 +577,12 @@ void GameServer::ProcessPlayerEvents()
     PlayerEvent evt;
     while (m_pNetwork->PollPlayerEvent(evt))
     {
-        if (evt.connected)
-            OnPlayerConnected(evt.playerId);
-        else
-            OnPlayerDisconnected(evt.playerId);
+        switch (evt.type)
+        {
+        case PlayerEventType::CONNECTED:    OnPeerConnected(evt.playerId);      break;
+        case PlayerEventType::JOINED:       OnPlayerJoined(evt.playerId);       break;
+        case PlayerEventType::DISCONNECTED: OnPlayerDisconnected(evt.playerId); break;
+        }
     }
 }
 
