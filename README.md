@@ -117,7 +117,7 @@ any phase.
 The server follows a **server-authoritative** model:
 
 - **Client → Server**: `InputCmd` (32 bytes) — player intent only (movement axes, yaw/pitch, button bitfield, viewed tick for lag compensation)
-- **Client → Server**: `JOIN_REQUEST` (1 byte) — "put me in the match"
+- **Client → Server**: `JOIN_REQUEST` (1 byte) — a request to enter the match, no payload
 - **Server → Client**: `Snapshot` (784 bytes at 10 players) — authoritative world state (positions, velocities, health, flags, recoil, ammo, score, kill feed)
 - **Server → Client**: `MapInfo` (68 bytes) — map name + collision checksum, sent once per connect
 
@@ -150,7 +150,8 @@ match.
 
 ```bash
 make
-g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include tools/session_test.cpp     -o session_test -LThirdParty/enet/lib -lenet -lpthread
+g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include tools/session_test.cpp \
+    -o session_test -LThirdParty/enet/lib -lenet -lpthread
 tools/run_sessiontest.sh          # exits non-zero on any failure
 ```
 
