@@ -91,9 +91,9 @@ private:
         double fireTimer = 0.0;
         // Recoil integration state (COD model). Advanced per shot in
         // ProcessFiring (newlyFired, dt=0) and decayed once per Tick —
-        // broadcast via state.punch*/shotKick (spec §4.3).
+        // broadcast via state.punch*/shotKick.
         RecoilMath::RecoilState recoil;
-        // Last shot result for Snapshot.lastShot* (hitmarker, spec §3.2).
+        // Last shot result for Snapshot.lastShot* (hitmarker).
         uint8_t lastShotResult = LastShotResult::MISS;
         uint8_t lastShotSeqMod = 0;
         // Lag compensation: per-tick position history, written at the end of

@@ -46,7 +46,7 @@ constexpr uint32_t SPRINT = 1 << 5;
 // Server will simulate movement based on these inputs.
 //-----------------------------------------------------------------------------
 struct InputCmd {
-  uint32_t tickId;  // Target server tick for this command
+  uint32_t tickId;  // Client sim tick this was built on (server-tick domain once synced)
   float moveAxisX;  // Horizontal movement: -1.0 (A) to 1.0 (D)
   float moveAxisY;  // Forward movement: -1.0 (S) to 1.0 (W)
   float yaw;        // Camera horizontal angle (radians)
@@ -95,7 +95,7 @@ struct NetPlayerState {
   uint16_t kills;                  // Score: kills by this player
   uint16_t deaths;                 // Score: times this player died
   uint8_t  pad[2];                 // pad to 4-byte alignment (legacy 56-byte tail)
-  // ---- Recoil (COD model, spec §1.1) — appended after the legacy tail so
+  // ---- Recoil (COD model) — appended after the legacy tail so
   // every pre-existing wire offset is untouched (fireCounter stays @46,
   // deaths @52). Visual punch decays to zero; shotKick is the tiny real
   // trajectory component. Server-side integrated, broadcast here; client
@@ -127,7 +127,7 @@ constexpr double RELOAD_OUT_OF_AMMO_DURATION = 2.7000; // index 9 (reload_out_of
 //-----------------------------------------------------------------------------
 namespace MatchConfig {
 constexpr uint16_t SCORE_LIMIT    = 10;      // first team to this many kills wins
-constexpr float    MATCH_DURATION = 60.0f;  // seconds (5:00) time limit
+constexpr float    MATCH_DURATION = 60.0f;  // seconds (1:00) time limit
 // Match flow: a match never runs on an empty or solo server. It arms only once
 // MIN_PLAYERS are connected, holds a frozen COUNTDOWN, and only then goes live.
 constexpr size_t   MIN_PLAYERS        = 2;
@@ -191,7 +191,7 @@ constexpr uint8_t HIT_KILL   = 3;
 } // namespace LastShotResult
 
 //-----------------------------------------------------------------------------
-// RecoilConfig — COD-model recoil (spec §1.1). MIRRORED in both repos, must
+// RecoilConfig — COD-model recoil. MIRRORED in both repos, must
 // stay in sync. fireCounter is the only determinism source: pattern index =
 // (fireCounter-1) % PATTERN_LEN; no RNG. Punch is VISUAL (decays to zero);
 // shotKick is the tiny real trajectory component; bloom (spread growth) is
@@ -209,7 +209,7 @@ constexpr uint16_t PATTERN_LEN = 30;              // one mag; idx = (fireCounter
   constexpr float PUNCH_MAX_DEG = 12.0f;
   // Total aim-cone half-angle cap (deg) applied AFTER base×moveMult + bloom.
   // A full-auto dump must spread, but never beyond this — keeps spray
-  // controllable (user ruling 2026-09-02).
+  // controllable.
   constexpr float SPREAD_MAX_DEG = 1.8f;
   // Hard cap on accumulated REAL kick (deg). shotKick never decays and resets
   // only on death, so without a bound it grows for the whole life (RED

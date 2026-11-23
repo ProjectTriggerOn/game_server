@@ -56,7 +56,7 @@ inline float Hash01(uint16_t v)
 
 //-----------------------------------------------------------------------------
 // PunchEnvelope — ramp for the first shots of a burst (0.6 → 1.0 by shot 5),
-// so single taps kick less than sustained fire (spec §5.1).
+// so single taps kick less than sustained fire.
 //-----------------------------------------------------------------------------
 inline float PunchEnvelope(uint16_t burstIdx)
 {
@@ -90,7 +90,7 @@ inline float MoveFactorFromVelocity(float velX, float velZ)
 //-----------------------------------------------------------------------------
 // RecoilSpreadRadians — current aim-cone half-angle for a shot.
 //   moveFactor: 0 = still, 1 = full run. Movement multiplies the BASE
-//   (HIP ×1.5, ADS ×1.3 per spec §1.1); bloom is added unscaled.
+//   (HIP ×1.5, ADS ×1.3); bloom is added unscaled.
 //-----------------------------------------------------------------------------
 // Single overload, NO default argument and NO 3-arg sibling — a default value
 // plus a same-name prefix overload is ambiguous for a 3-arg call in C++ (the
@@ -100,7 +100,7 @@ inline float RecoilSpreadRadians(uint8_t teamId, bool ads, float bloomDeg,
 {
     const RecoilConfig::WeaponSpec& w = RecoilConfig::SpecForTeam(teamId);
     const float base = (ads ? w.spreadBaseDegAds : w.spreadBaseDegHip) * kDegToRad;
-    // ADS moving is punished less than HIP moving (spec §1.1): ×1.3 vs ×1.5.
+    // ADS moving is punished less than HIP moving: ×1.3 vs ×1.5.
     const float moveMult = 1.0f + moveFactor * (ads ? 0.3f : 0.5f);
     const float total = base * moveMult + bloomDeg * kDegToRad;
     const float cap   = RecoilConfig::SPREAD_MAX_DEG * kDegToRad;
@@ -176,7 +176,7 @@ inline void RecoilAdvance(RecoilState& rs, uint8_t teamId, uint16_t fireCounter,
 
 //-----------------------------------------------------------------------------
 // RecoilTotalOffsets — the direction deltas a shot inherits from recoil.
-// WYSIWYG contract (spec §2): bullets follow the punched view, so both the
+// WYSIWYG contract: bullets follow the punched view, so both the
 // server's ray and the client's rendered view use these same offsets added
 // to the player's raw yaw/pitch.
 //-----------------------------------------------------------------------------

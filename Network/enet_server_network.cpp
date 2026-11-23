@@ -47,7 +47,7 @@ void ENetServerNetwork::Initialize()
     address.host = ENET_HOST_ANY;
     address.port = m_Port;
 
-    // Create server host: max 4 clients, 2 channels
+    // Create server host: MAX_PLAYERS peers, 2 channels
     m_pServer = enet_host_create(&address, MAX_PLAYERS, 2, 0, 0);
     if (!m_pServer)
     {
