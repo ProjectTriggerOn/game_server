@@ -249,6 +249,7 @@ void GameServer::OnPlayerJoined(uint8_t playerId)
     data.state.ammo = WeaponConfig::MAG_SIZE;
     data.state.ammoReserve = WeaponConfig::MAX_RESERVE;
     data.lastInput = {};
+    data.lastInputServerTick = m_CurrentTick;
     data.reloadTimer = 0.0;
     data.respawnTimer = 0.0;
     data.fireTimer = 0.0;
@@ -318,6 +319,9 @@ void GameServer::Tick()
     {
         ProcessInputCmd(taggedInput.cmd, taggedInput.playerId);
     }
+
+    // 3b. A player whose input stopped arriving is not still holding the keys.
+    DropStaleInput();
 
     // 4. Simulate physics for all players
     SimulatePhysics();
@@ -599,6 +603,7 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     player.prevButtons = cmd.buttons;
     uint32_t newlyPressed = cmd.buttons & ~prevButtons;  // 0→1 edges
     player.lastInput = cmd;
+    player.lastInputServerTick = m_CurrentTick;
 
     // Dead players, and EVERYONE while the world is frozen (COUNTDOWN /
     // ENDED): only the camera updates, every action is dropped. This is what
@@ -673,6 +678,38 @@ void GameServer::ProcessInputCmd(const InputCmd& cmd, uint8_t playerId)
     }
 
     player.state.stateFlags = flags;
+}
+
+//-----------------------------------------------------------------------------
+// DropStaleInput - Stop acting on a command nobody is still sending
+//
+// Physics and firing both read player.lastInput every tick, so without this a
+// client that freezes, or loses its link, keeps walking and firing on its last
+// command until ENet times the peer out (5-30 s). Movement and buttons are
+// cleared, and with them the intent flags ProcessInputCmd set from that
+// command, so other clients stop seeing a firing animation too. tickId and the
+// look angles are kept: the ack keeps pointing at the last real command, and
+// the player's view stays where they left it. When input resumes, the next
+// command overwrites all of this.
+//-----------------------------------------------------------------------------
+void GameServer::DropStaleInput()
+{
+    for (auto& [id, player] : m_Players)
+    {
+        if (m_CurrentTick - player.lastInputServerTick <= STALE_INPUT_TICKS)
+            continue;
+
+        InputCmd& in = player.lastInput;
+        if (in.moveAxisX == 0.0f && in.moveAxisY == 0.0f && in.buttons == 0)
+            continue;  // already neutral
+
+        in.moveAxisX = 0.0f;
+        in.moveAxisY = 0.0f;
+        in.buttons = 0;
+        player.state.stateFlags &= ~(NetStateFlags::IS_FIRING | NetStateFlags::IS_ADS);
+        ServerLog::Warn("Player %u: no input for %u ticks, holding them still",
+                        static_cast<unsigned>(id), static_cast<unsigned>(STALE_INPUT_TICKS));
+    }
 }
 
 //-----------------------------------------------------------------------------
