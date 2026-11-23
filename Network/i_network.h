@@ -3,7 +3,9 @@
 // i_network.h
 //
 // Abstract network interface for Server-Authoritative architecture.
-// IMPORTANT: This file must be kept in sync with game_client/Network/i_network.h
+// The client has its own copy of this interface, which has since grown
+// client-only queries (RTT, join state). What both sides must agree on is the
+// wire format, and that lives in net_common.h and net_packet.h.
 //=============================================================================
 
 #include "net_common.h"
