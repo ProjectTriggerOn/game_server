@@ -33,6 +33,15 @@ public:
     static constexpr double TICK_RATE = 32.0;
     static constexpr double TICK_DURATION = 1.0 / TICK_RATE;
 
+    // How long a player's last command is trusted with no newer one behind it.
+    // The client sends at 60 Hz, about two commands per tick, so 8 ticks
+    // (250 ms) of silence is ~15 consecutive losses: the client has stalled
+    // or the link is gone. ENet itself takes 5-30 s to declare the peer dead,
+    // and until then the server would keep walking and firing on that
+    // player's behalf. Past this window the movement and buttons are dropped;
+    // the look angles are kept, since they are the last thing the player chose.
+    static constexpr uint32_t STALE_INPUT_TICKS = 8;
+
     GameServer();
     ~GameServer();
 
@@ -79,6 +88,7 @@ private:
         // hash order.
         NetPlayerState state;
         InputCmd lastInput{};
+        uint32_t lastInputServerTick = 0;  // m_CurrentTick when lastInput arrived
         uint32_t prevButtons = 0;  // Previous cmd.buttons for edge detection
         double reloadTimer = 0.0;
         // Identity, not state — exempt from the rule above. Fixed at connect and
@@ -100,12 +110,18 @@ private:
         // Tick() — exactly the state BroadcastSnapshots() sends (including
         // respawn teleports). Indexed by tick % POSITION_HISTORY_SIZE.
         static constexpr size_t POSITION_HISTORY_SIZE = 64;  // 2s @ 32Hz (> MAX_REWIND_TICKS)
+        // GetRewoundPosition falls back to the live position when a slot is
+        // missing, so a rewind window longer than the history would not crash;
+        // lag compensation would just switch itself off. Fail the build instead.
+        static_assert(POSITION_HISTORY_SIZE > LagCompConfig::MAX_REWIND_TICKS,
+                      "lag-comp history must cover the whole rewind window");
         PositionHistoryEntry history[POSITION_HISTORY_SIZE]{};
     };
 
     void Tick();
     void ProcessPlayerEvents();
     void ProcessInputCmd(const InputCmd& cmd, uint8_t playerId);
+    void DropStaleInput();
     void UpdatePlayerReloadTimer(PlayerData& player);
     void ProcessFiring(PlayerData& shooter, uint8_t shooterId);
     bool RaycastPlayers(const Float3& origin, const Float3& dir,

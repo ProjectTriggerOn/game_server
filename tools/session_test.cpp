@@ -23,6 +23,12 @@
 //   --scenario match    The control for `phantom`, which would also pass if
 //                       joining were broken outright: two peers that DO join
 //                       must carry the room WAITING -> COUNTDOWN -> PLAYING.
+//   --scenario silent   A joined player holds FIRE, then stops sending input
+//                       while its connection stays up (a frozen client, or a
+//                       cable pulled before ENet notices: ENet takes 5-30s to
+//                       declare a peer gone). The server must stop acting on
+//                       the last command it received instead of firing on
+//                       that player's behalf until the timeout.
 //
 // Build (from the game_server directory, same flags as the Makefile):
 //   g++ -std=c++17 -O2 -INetwork -IThirdParty/enet/include tools/session_test.cpp
@@ -71,6 +77,9 @@ struct TestPeer
     uint32_t snapsBeforeJoin = 0;
     uint32_t snapsAfterJoin  = 0;
     uint8_t  localPlayerId  = 0xFF;
+    // From the most recent snapshot: this peer's own authoritative state.
+    uint16_t fireCounter    = 0;
+    uint32_t stateFlags     = 0;
     // Every distinct matchState this peer was told about, in order seen.
     std::vector<uint8_t> statesSeen;
 
@@ -106,6 +115,18 @@ struct TestPeer
         joinSent = true;
     }
 
+    // One INPUT_CMD, framed exactly as the real client frames it.
+    void SendInput(const InputCmd& cmd)
+    {
+        if (!peer) return;
+        uint8_t buf[1 + sizeof(InputCmd)];
+        buf[0] = static_cast<uint8_t>(PacketType::INPUT_CMD);
+        std::memcpy(buf + 1, &cmd, sizeof(InputCmd));
+        ENetPacket* pkt = enet_packet_create(buf, sizeof(buf), ENET_PACKET_FLAG_UNSEQUENCED);
+        if (!pkt) return;
+        enet_peer_send(peer, 0, pkt);
+    }
+
     void Pump()
     {
         if (!host) return;
@@ -134,6 +155,8 @@ struct TestPeer
                         std::memcpy(&s, ev.packet->data + 1, sizeof(Snapshot));
                         if (joinSent) snapsAfterJoin++; else snapsBeforeJoin++;
                         localPlayerId = s.localPlayerId;
+                        fireCounter = s.localPlayer.fireCounter;
+                        stateFlags = s.localPlayer.stateFlags;
                         if (statesSeen.empty() || statesSeen.back() != s.matchState)
                             statesSeen.push_back(s.matchState);
                     }
@@ -322,6 +345,72 @@ int main(int argc, char** argv)
         ok &= Check("the countdown handed over to PLAYING", sawPlaying);
         p1.ReportStates();
         p1.Close(); p2.Close();
+    }
+    //-------------------------------------------------------------------------
+    else if (scenario == "silent")
+    {
+        // Alone in the room, so the match stays in WAITING, which is a warm-up
+        // you can shoot in. Hold FIRE briefly, then go quiet without closing
+        // the peer. Samples are taken well after any reasonable staleness
+        // window, and the gap between them is long enough for several shots at
+        // either team's rate of fire (600 / 800 RPM) while staying inside one
+        // 30-round magazine, so a server still firing on the stale command
+        // cannot hide behind an empty magazine.
+        constexpr double JOIN_AT      = 1.0;
+        constexpr double FIRE_FOR     = 0.3;
+        constexpr double SAMPLE_A     = 0.75;  // after going quiet
+        constexpr double SAMPLE_B     = 1.75;
+        if (secs <= 0.0) secs = JOIN_AT + 1.0 + FIRE_FOR + SAMPLE_B + 0.25;
+
+        TestPeer a;
+        if (!a.Open("player", host.c_str(), port)) { std::printf("FAIL: connect\n"); return 1; }
+        std::vector<TestPeer*> peers{ &a };
+
+        double fireStart = -1.0, quietAt = -1.0, lastSend = -1.0;
+        uint32_t seq = 0;
+        uint16_t firedWhileHeld = 0, fcA = 0, fcB = 0;
+        bool sampledA = false, sampledB = false, firingFlagAtB = true;
+
+        Run(peers, secs, [&](double el) {
+            if (el >= JOIN_AT && a.gotMapInfo) a.SendJoin();
+            // Start firing once snapshots prove we are a live player.
+            if (fireStart < 0.0 && a.snapsAfterJoin > 0 && a.localPlayerId < MAX_PLAYERS)
+                fireStart = el;
+            if (fireStart < 0.0) return;
+
+            if (el < fireStart + FIRE_FOR)
+            {
+                if (el - lastSend >= 1.0 / 60.0)   // the real client's send rate
+                {
+                    InputCmd cmd{};
+                    cmd.tickId = ++seq;
+                    cmd.buttons = InputButtons::FIRE;
+                    a.SendInput(cmd);
+                    lastSend = el;
+                }
+                return;
+            }
+            if (quietAt < 0.0) { quietAt = el; firedWhileHeld = a.fireCounter; }
+
+            if (!sampledA && el >= quietAt + SAMPLE_A) { fcA = a.fireCounter; sampledA = true; }
+            if (!sampledB && el >= quietAt + SAMPLE_B)
+            {
+                fcB = a.fireCounter;
+                firingFlagAtB = (a.stateFlags & NetStateFlags::IS_FIRING) != 0;
+                sampledB = true;
+            }
+        });
+
+        ok &= Check("the player joined and fired while FIRE was being sent",
+                    a.snapsAfterJoin > 0 && firedWhileHeld > 0);
+        ok &= Check("both samples were taken after going quiet", sampledA && sampledB);
+        ok &= Check("no shots after input stopped (server dropped the stale command)",
+                    sampledA && sampledB && fcB == fcA);
+        ok &= Check("IS_FIRING is no longer broadcast for the silent player",
+                    sampledB && !firingFlagAtB);
+        std::printf("      fireCounter: while held %u   quiet+%.2fs %u   quiet+%.2fs %u\n",
+                    firedWhileHeld, SAMPLE_A, fcA, SAMPLE_B, fcB);
+        a.Close();
     }
     //-------------------------------------------------------------------------
     else
