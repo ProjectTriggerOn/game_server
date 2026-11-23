@@ -6,6 +6,8 @@
 
 Authoritative game server for TriggerOn — a multiplayer networked FPS. Runs on Linux, deployed via Docker.
 
+The Windows client is [game_client_v2](https://github.com/ProjectTriggerOn/game_client_v2). The two share the wire protocol, so they are released together.
+
 ## Features
 
 - **Server-authoritative** physics, movement, and combat simulation
@@ -190,6 +192,6 @@ tools/
 ├── run_sessiontest.sh          Server-lifecycle conformance suite
 └── run_floodtest.sh            Flood before/after scenario
 ThirdParty/
-└── enet/                       ENet networking library (built from source)
+└── enet/                       ENet headers and a prebuilt static library (libenet.a)
 .github/workflows/              Docker image build & publish (main, dev)
 ```

@@ -6,6 +6,8 @@
 
 マルチプレイヤー FPS「TriggerOn」のサーバー権威型ゲームサーバー。Linux 上で動作し、Docker によるデプロイに対応。
 
+Windows クライアントは [game_client_v2](https://github.com/ProjectTriggerOn/game_client_v2) です。通信プロトコルを共有しているため、両方を揃えてリリースしています。
+
 ## 主な機能
 
 - **サーバー権威型** — 物理演算、移動処理、当たり判定をすべてサーバー側で実行
@@ -189,6 +191,6 @@ tools/
 ├── run_sessiontest.sh          起動 / 参加まわりの検証スイート
 └── run_floodtest.sh            フラッド前後比較シナリオ
 ThirdParty/
-└── enet/                       ENet ネットワークライブラリ（ソースからビルド）
+└── enet/                       ENet のヘッダーとビルド済み静的ライブラリ（libenet.a）
 .github/workflows/              Docker イメージのビルド・公開（main / dev）
 ```
