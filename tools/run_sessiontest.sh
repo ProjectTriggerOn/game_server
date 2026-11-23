@@ -2,7 +2,7 @@
 #=============================================================================
 # run_sessiontest.sh
 #
-# Server-lifecycle conformance suite. Four things a dedicated server must get
+# Server-lifecycle conformance suite. Six things a dedicated server must get
 # right before anyone can play on it:
 #
 #   1. bind      A server that cannot take its port MUST die, not pretend.
@@ -18,6 +18,9 @@
 #                a match nobody is playing.
 #   5. match     The control for 4: two peers that DO join must still carry the
 #                room WAITING -> COUNTDOWN -> PLAYING.
+#   6. silent    A joined player that stops sending input while its peer is
+#                still up must stop acting: no more shots on its last command
+#                for the 5-30s ENet takes to notice the peer is gone.
 #
 # Runs entirely over loopback. Uses a high port so a real server on 7777 (or a
 # container publishing it) does not interfere.
@@ -49,7 +52,7 @@ echo "===== server session suite | port=$PORT | map=$MAP ====="
 # 1. bind: the second server on a taken port must exit non-zero.
 #-----------------------------------------------------------------------------
 echo
-echo "--- [1/5] bind: a server that cannot take its port must exit non-zero"
+echo "--- [1/6] bind: a server that cannot take its port must exit non-zero"
 "$SRV" --port="$PORT" --map="$MAP" > "$LOGDIR/sess_s1.log" 2>&1 &
 S1=$!
 sleep 2
@@ -79,20 +82,24 @@ fi
 # 2-5. connect/join split, against the healthy first server.
 #-----------------------------------------------------------------------------
 echo
-echo "--- [2/5] lurker"
+echo "--- [2/6] lurker"
 "$TEST" --scenario lurker --port "$PORT" --secs 8 || FAILED=1
 
 echo
-echo "--- [3/5] join"
+echo "--- [3/6] join"
 "$TEST" --scenario join --port "$PORT" --secs 8 || FAILED=1
 
 echo
-echo "--- [4/5] phantom"
+echo "--- [4/6] phantom"
 "$TEST" --scenario phantom --port "$PORT" --secs 16 || FAILED=1
 
 echo
-echo "--- [5/5] match"
+echo "--- [5/6] match"
 "$TEST" --scenario match --port "$PORT" || FAILED=1
+
+echo
+echo "--- [6/6] silent"
+"$TEST" --scenario silent --port "$PORT" || FAILED=1
 
 kill "$S1" 2>/dev/null
 wait "$S1" 2>/dev/null
